@@ -79,6 +79,8 @@ export class PaiSyncService {
       replica.email = student.email ?? undefined;
       replica.document = student.document ?? undefined;
       replica.ibcCustomerId = student.ibcCustomerId ?? undefined;
+      replica.courseEventDate = course.eventDate ?? undefined;
+      replica.courseEventDateEnd = course.eventDateEnd ?? undefined;
       replicas.push(replica);
     }
 
@@ -96,13 +98,33 @@ export class PaiSyncService {
       skipped,
     };
   }
+  async syncAllKnownCourses(): Promise<CourseSyncResult[]> {
+    const localCourses = await this.studentsService.listSyncedCourses();
+    if (localCourses.length === 0) {
+      return [];
+    }
 
-  /**
-   * Executa uma consulta no banco do Pai convertendo qualquer falha de
-   * conexão (rede instável, IP mutável, banco fora do ar — esperado em
-   * eventos itinerantes) em um erro HTTP claro (503), em vez de deixar
-   * vazar uma exceção crua do driver MySQL para o front-end.
-   */
+    const reachable = await this.remotePrisma.ping();
+    if (!reachable) {
+      throw new ServiceUnavailableException(
+        'Não foi possível conectar ao banco do Checkin Pai agora. As turmas já baixadas continuam disponíveis normalmente.',
+      );
+    }
+
+    const results: CourseSyncResult[] = [];
+    for (const course of localCourses) {
+      try {
+        results.push(await this.syncCourse(course.courseId));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Falha ao re-sincronizar turma ${course.courseId} (${course.courseName}): ${message}`,
+        );
+      }
+    }
+
+    return results;
+  }
   private async queryPai<T>(query: () => Promise<T>): Promise<T> {
     try {
       return await query();

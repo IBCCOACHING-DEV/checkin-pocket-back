@@ -42,4 +42,17 @@ export class AuthController {
   getSyncStatus(): Promise<AuthSyncStatus> {
     return this.authSyncService.getStatus();
   }
+
+  @Post('sync')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Força uma sincronização imediata de operadores com o Checkin Pai',
+    description:
+      'Usado pelo botão "Sincronizar agora" da tela de login — dispara uma tentativa fora do ritmo normal do loop de retry/refresh e retorna o status atualizado.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Status atualizado após a tentativa (ver campo "lastError" para saber se falhou).' })
+  async forceSync(): Promise<AuthSyncStatus> {
+    await this.authSyncService.forceSync();
+    return this.authSyncService.getStatus();
+  }
 }

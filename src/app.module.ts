@@ -1,6 +1,8 @@
+import { join } from 'path';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ServeStaticModule } from '@nestjs/serve-static';
 import { AuthModule } from './auth/auth.module';
 import { PrintModule } from './print/print.module';
 import configuration from './config/configuration';
@@ -19,23 +21,22 @@ import { PaiSyncModule } from './pai-sync/pai-sync.module';
       load: [configuration],
       isGlobal: true,
     }),
-    // Habilita os workers/cron do NestJS (@Interval/@Cron) usados pelo
-    // Outbox publisher e pelo worker de impressão local.
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'public'),
+      exclude: ['/api/(.*)'],
+      serveStaticOptions: {
+        fallthrough: true,
+      },
+    }),
     ScheduleModule.forRoot(),
-    // Banco local (SQLite/WAL) e mensageria (RabbitMQ) do Checkin Pocket.
     DatabaseModule,
     MessagingModule,
     AuthModule,
-    // Impressão local direta (sem fila/Redis) — usada tanto pelos
-    // endpoints manuais de teste quanto pelo worker de print_jobs.
     PrintModule,
-    // Fluxo principal de credenciamento (Checkin Pocket).
     StudentsModule,
     LocalPrintModule,
     OutboxModule,
     CheckinModule,
-    // Sincronização de auth (cache de Operator) e de Courses/Students a
-    // partir do banco do Checkin Pai (leitura direta, ver database/).
     AuthSyncModule,
     PaiSyncModule,
   ],

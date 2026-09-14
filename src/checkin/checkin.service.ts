@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { LocalPrismaService } from '../database/local-prisma.service';
 import { LocalTransactionClient } from '../database/local-prisma.types';
+import { Student } from '../../generated/prisma-local';
 import { StudentsService } from '../students/students.service';
 import { LocalPrintJobsService } from '../local-print/local-print-jobs.service';
 import { LocalPrintWorkerService } from '../local-print/local-print-worker.service';
@@ -12,22 +13,6 @@ import { CheckinPerformedMessage } from '../messaging/types';
 import { CheckinRequestDto } from './dto/checkin-request.dto';
 import { CheckinResult } from './interfaces/checkin-result.interface';
 
-/**
- * Orquestra o fluxo principal de credenciamento (check-in) do Checkin
- * Pocket:
- *
- *  1. Localiza o aluno na réplica local (por token do QR Code).
- *  2. Se já credenciado, retorna idempotentemente (não duplica impressão
- *     nem evento).
- *  3. Em uma ÚNICA transação SQLite:
- *       a. marca o aluno como credenciado;
- *       b. cria o print_job da etiqueta (nome do aluno + nome da turma);
- *       c. grava o evento no outbox_events (Outbox Pattern).
- *  4. A impressão física e a publicação no RabbitMQ acontecem de forma
- *     assíncrona, por workers dedicados (`LocalPrintWorkerService` e
- *     `OutboxPublisherWorker`) — o check-in responde rápido mesmo se a
- *     impressora ou o broker estiverem temporariamente indisponíveis.
- */
 @Injectable()
 export class CheckinService {
   private readonly logger = new Logger(CheckinService.name);
@@ -53,17 +38,16 @@ export class CheckinService {
     const student = await this.studentsService.findByToken(dto.studentToken);
 
     if (!student) {
+      this.logger.warn(`Check-in recusado — token não encontrado na base local (token=${dto.studentToken}).`);
       return {
         success: false,
         message: 'Aluno não encontrado na base local. Sincronize os ingressos antes do check-in.',
       };
     }
-
-    // Mesma validação do Checkin Pai (CheckinProcessorService): se uma
-    // turma foi selecionada na tela de check-in, o aluno precisa pertencer
-    // a ela — evita credenciar por engano na turma errada quando há mais
-    // de uma turma sincronizada nesta estação.
     if (dto.courseId !== undefined && student.courseId !== dto.courseId) {
+      this.logger.warn(
+        `Check-in recusado — aluno=${student.id} pertence à turma ${student.courseId}, mas a turma selecionada foi ${dto.courseId}.`,
+      );
       return {
         success: false,
         message: 'Aluno não pertence à turma selecionada.',
@@ -71,10 +55,23 @@ export class CheckinService {
     }
 
     if (student.checkedIn) {
+      this.logger.log(`Check-in ignorado — aluno=${student.id} (${student.name}) já credenciado anteriormente.`);
       return {
         success: true,
         alreadyCheckedIn: true,
         message: 'Aluno já credenciado anteriormente.',
+        studentId: student.id,
+        studentName: student.name,
+        courseName: student.courseName,
+      };
+    }
+
+    const windowError = this.validateCourseWindow(student);
+    if (windowError) {
+      this.logger.warn(`Check-in recusado — aluno=${student.id} (${student.name}): ${windowError}`);
+      return {
+        success: false,
+        message: windowError,
         studentId: student.id,
         studentName: student.name,
         courseName: student.courseName,
@@ -137,5 +134,36 @@ export class CheckinService {
       courseName: student.courseName,
       printJobId,
     };
+  }
+  private validateCourseWindow(student: Student): string | null {
+    const { courseEventDate, courseEventDateEnd } = student;
+    if (!courseEventDate && !courseEventDateEnd) {
+      return null;
+    }
+
+    const today = this.todayIsoDate();
+
+    if (courseEventDate && today < courseEventDate) {
+      return `Fora do período da turma "${student.courseName}" — o credenciamento abre em ${this.formatBrDate(courseEventDate)}.`;
+    }
+
+    if (courseEventDateEnd && today > courseEventDateEnd) {
+      return `Fora do período da turma "${student.courseName}" — o credenciamento encerrou em ${this.formatBrDate(courseEventDateEnd)}.`;
+    }
+
+    return null;
+  }
+
+  private todayIsoDate(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  private formatBrDate(isoDate: string): string {
+    const [year, month, day] = isoDate.split('-');
+    return `${day}/${month}/${year}`;
   }
 }

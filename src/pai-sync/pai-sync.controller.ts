@@ -35,4 +35,16 @@ export class PaiSyncController {
   syncCourse(@Param('id', ParseIntPipe) id: number): Promise<CourseSyncResult> {
     return this.paiSyncService.syncCourse(id);
   }
+
+  @Post('courses/sync-all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Resincroniza todas as turmas já baixadas nesta estação',
+    description:
+      'Repete o download (upsert) de cada turma que esta estação já possui localmente — usado pelo botão "Atualizar turmas baixadas" e automaticamente logo após o login.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Turmas resincronizadas.' })
+  syncAllKnownCourses(): Promise<CourseSyncResult[]> {
+    return this.paiSyncService.syncAllKnownCourses();
+  }
 }
