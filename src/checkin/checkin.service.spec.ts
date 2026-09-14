@@ -140,4 +140,56 @@ describe('CheckinService', () => {
 
     expect(printWorker.triggerNow).toHaveBeenCalledTimes(1);
   });
+
+  function isoDateOffsetFromToday(days: number): string {
+    const date = new Date();
+    date.setDate(date.getDate() + days);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  it('bloqueia o check-in antes do início da turma', async () => {
+    studentsService.findByToken.mockResolvedValue({
+      ...mockStudent,
+      courseEventDate: isoDateOffsetFromToday(1),
+      courseEventDateEnd: isoDateOffsetFromToday(3),
+    });
+
+    const result = await service.performCheckin({ studentToken: 'token-123' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Turma XPTO');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('bloqueia o check-in depois do fim da turma', async () => {
+    studentsService.findByToken.mockResolvedValue({
+      ...mockStudent,
+      courseEventDate: isoDateOffsetFromToday(-3),
+      courseEventDateEnd: isoDateOffsetFromToday(-1),
+    });
+
+    const result = await service.performCheckin({ studentToken: 'token-123' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Turma XPTO');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('permite o check-in dentro do período da turma', async () => {
+    studentsService.findByToken.mockResolvedValue({
+      ...mockStudent,
+      courseEventDate: isoDateOffsetFromToday(-1),
+      courseEventDateEnd: isoDateOffsetFromToday(1),
+    });
+    printJobsService.createPendingJob.mockResolvedValue({ id: 100 });
+    outboxService.record.mockResolvedValue({ id: 'outbox-2' });
+
+    const result = await service.performCheckin({ studentToken: 'token-123' });
+
+    expect(result.success).toBe(true);
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
 });

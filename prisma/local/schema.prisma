@@ -26,6 +26,12 @@ model Student {
   id            Int       @id
   courseId      Int       @map("course_id")
   courseName    String    @map("course_name")
+  /// Data de início da turma no Checkin Pai (formato "YYYY-MM-DD",
+  /// denormalizada do Course — usada para bloquear check-in fora do
+  /// período do evento, ver CheckinService#validateCourseWindow).
+  courseEventDate    String?   @map("course_event_date")
+  /// Data de término da turma (mesmo formato de courseEventDate).
+  courseEventDateEnd String?   @map("course_event_date_end")
   name          String
   email         String?
   document      String?

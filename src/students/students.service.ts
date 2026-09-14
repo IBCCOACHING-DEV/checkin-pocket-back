@@ -153,6 +153,8 @@ export class StudentsService {
           id: item.id,
           courseId: item.courseId,
           courseName: item.courseName,
+          courseEventDate: item.courseEventDate ?? null,
+          courseEventDateEnd: item.courseEventDateEnd ?? null,
           name: item.name,
           token: item.token,
           email: item.email ?? null,
@@ -162,6 +164,8 @@ export class StudentsService {
         update: {
           courseId: item.courseId,
           courseName: item.courseName,
+          courseEventDate: item.courseEventDate ?? null,
+          courseEventDateEnd: item.courseEventDateEnd ?? null,
           name: item.name,
           token: item.token,
           email: item.email ?? null,

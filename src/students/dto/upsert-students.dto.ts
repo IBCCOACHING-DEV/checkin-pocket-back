@@ -48,6 +48,22 @@ export class StudentReplicaDto {
   @IsOptional()
   @IsInt()
   ibcCustomerId?: number;
+
+  @ApiProperty({
+    required: false,
+    description: 'Data de início da turma no Checkin Pai (formato "YYYY-MM-DD"), usada para bloquear check-in fora do período do evento.',
+  })
+  @IsOptional()
+  @IsString()
+  courseEventDate?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Data de término da turma (mesmo formato de courseEventDate).',
+  })
+  @IsOptional()
+  @IsString()
+  courseEventDateEnd?: string;
 }
 
 /**
