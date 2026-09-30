@@ -164,6 +164,36 @@ model Operator {
   @@map("operators")
 }
 
+/// Transferência de ingresso solicitada pelo operador nesta estação.
+/// Criada com status "pending" na MESMA transação SQLite que grava o
+/// OutboxEvent de `transfer.requested` — o resultado (sucesso/erro) só
+/// chega depois, de forma assíncrona, via TicketTransferSyncConsumer
+/// (evento `transfer.completed` publicado pelo Checkin Pai). O front
+/// usa este registro para fazer polling do status sem travar a tela
+/// enquanto o Pai processa a transferência no Coliseum.
+model TicketTransfer {
+  id                String    @id @default(uuid())
+  studentId         Int       @map("student_id")
+  courseId          Int       @map("course_id")
+  status            String    @default("pending") // pending | completed | failed
+  requestedName     String    @map("requested_name")
+  requestedEmail    String    @map("requested_email")
+  requestedPhone    String    @map("requested_phone")
+  requestedDocument String?   @map("requested_document")
+  requestedNickName String?   @map("requested_nick_name")
+  requestedNote     String?   @map("requested_note")
+  errorMessage      String?   @map("error_message")
+  sourceAgentKey    String    @map("source_agent_key")
+  resolvedAt        DateTime? @map("resolved_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([studentId])
+  @@map("ticket_transfers")
+}
+
 /// Outbox Pattern: eventos de domínio (ex.: check-in realizado) gravados na
 /// MESMA transação local que a mudança de estado. Um worker tenta publicar
 /// no RabbitMQ e só apaga a linha após receber o ACK do broker.

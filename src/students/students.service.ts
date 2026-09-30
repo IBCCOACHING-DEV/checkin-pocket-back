@@ -13,6 +13,23 @@ export interface RemoteCheckinPayload {
   checkedInAt: Date;
 }
 
+export interface RemoteTransferPayload {
+  name: string;
+  email: string | null;
+  document: string | null;
+  /** Novo token do voucher — o Checkin Pai regenera o token quando a titularidade muda. */
+  token: string;
+  /** Necessário para criar um registro mínimo quando esta estação nunca sincronizou esse aluno antes. */
+  courseId: number;
+  courseName: string | null;
+}
+
+export interface LocalTransferPayload {
+  name: string;
+  email: string | null;
+  document: string | null;
+}
+
 export interface SyncedCourseSummary {
   courseId: number;
   courseName: string;
@@ -218,6 +235,81 @@ export class StudentsService {
         token: payload.token,
         checkedIn: true,
         checkedInAt: payload.checkedInAt,
+      },
+    });
+  }
+
+  /**
+   * Aplica IMEDIATAMENTE, na MESMA transação SQLite que cria o
+   * `TicketTransfer`/`OutboxEvent` (ver TicketTransferService), os dados
+   * do novo titular no aluno local — sem esperar o Checkin Pai/Coliseum
+   * confirmarem nada. Isso é deliberado: numa transferência de ingresso
+   * dentro de um evento, agilidade importa mais do que esperar a cadeia
+   * completa Pocket → Pai → Coliseum responder (decisão de produto, ver
+   * discussão da feature de transferência de ingresso).
+   *
+   * NÃO toca no `token`: só o Checkin Pai decide o token definitivo (ele
+   * regenera ao confirmar a mudança de titularidade no Coliseum — ver
+   * Student#handle_ownership_change no Pai). Se o Pocket decidisse um
+   * token novo aqui, ele quase certamente divergiria do que o Pai gera
+   * depois. O token atual continua válido até a confirmação assíncrona
+   * (`transfer.completed`, ver StudentsService#applyRemoteTransfer)
+   * trazer o definitivo — uma janela curta e aceita conscientemente em
+   * troca de velocidade/resiliência offline.
+   *
+   * Usa `updateMany` (não upsert): só faz sentido atualizar um aluno que
+   * esta estação já tem localmente. Se nunca sincronizou esse aluno, não
+   * há como aplicar isso agora sem token nenhum — o registro será criado
+   * pela confirmação assíncrona do Pai (que já traz o token real).
+   */
+  async applyLocalTransfer(
+    tx: LocalTransactionClient,
+    studentId: number,
+    payload: LocalTransferPayload,
+  ): Promise<boolean> {
+    const result = await tx.student.updateMany({
+      where: { id: studentId },
+      data: {
+        name: payload.name,
+        email: payload.email,
+        document: payload.document,
+      },
+    });
+    return result.count > 0;
+  }
+
+  /**
+   * Aplica, de forma idempotente, uma transferência de ingresso concluída
+   * no Checkin Pai (recebida via RabbitMQ, evento `transfer.completed`).
+   * Atualiza nome/e-mail/documento e — crucial — o `token`: o Pai regenera
+   * o token do voucher sempre que a titularidade muda, então o QR físico
+   * antigo deixa de funcionar a partir deste ponto em TODAS as estações.
+   *
+   * Faz UPSERT (não `updateMany`): esta estação pode nunca ter
+   * sincronizado esse aluno localmente (turma nunca baixada aqui) — nesse
+   * caso o resultado da transferência precisa aparecer mesmo assim, então
+   * cria um registro mínimo a partir do próprio evento, igual a
+   * `applyRemoteCheckin` já faz para check-ins remotos. `checkedIn` fica
+   * `false` num registro novo: a transferência não implica que o novo
+   * titular já passou pela credenciamento.
+   */
+  async applyRemoteTransfer(studentId: number, payload: RemoteTransferPayload): Promise<void> {
+    await this.prisma.student.upsert({
+      where: { id: studentId },
+      update: {
+        name: payload.name,
+        email: payload.email,
+        document: payload.document,
+        token: payload.token,
+      },
+      create: {
+        id: studentId,
+        courseId: payload.courseId,
+        courseName: payload.courseName ?? `Turma #${payload.courseId}`,
+        name: payload.name,
+        email: payload.email,
+        document: payload.document,
+        token: payload.token,
       },
     });
   }

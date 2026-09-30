@@ -14,6 +14,7 @@ import { OutboxModule } from './outbox/outbox.module';
 import { CheckinModule } from './checkin/checkin.module';
 import { AuthSyncModule } from './auth-sync/auth-sync.module';
 import { PaiSyncModule } from './pai-sync/pai-sync.module';
+import { TicketTransferModule } from './ticket-transfer/ticket-transfer.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { PaiSyncModule } from './pai-sync/pai-sync.module';
     CheckinModule,
     AuthSyncModule,
     PaiSyncModule,
+    TicketTransferModule,
   ],
 })
 export class AppModule {}
