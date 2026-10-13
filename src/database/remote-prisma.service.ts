@@ -68,6 +68,12 @@ export class RemotePaiPrismaService implements OnModuleDestroy {
       database: this.configService.get<string>('paiDatabase.name'),
       connectionLimit: 5,
       connectTimeout: 5000,
+      // MySQL 8 usa caching_sha2_password por padrão — sem SSL, o driver
+      // precisa buscar a chave pública RSA do servidor pra criptografar a
+      // senha na negociação inicial. Sem esta opção, a conexão trava até
+      // estourar o timeout do pool em vez de autenticar (visto contra o
+      // banco de produção do Pai, que usa esse plugin de autenticação).
+      allowPublicKeyRetrieval: true,
     });
 
     return new PrismaClient({ adapter });

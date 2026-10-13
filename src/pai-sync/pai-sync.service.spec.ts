@@ -1,0 +1,86 @@
+import { ForbiddenException } from '@nestjs/common';
+import { PaiSyncService } from './pai-sync.service';
+
+describe('PaiSyncService — escopo de turmas do operador', () => {
+  function build(overrides: { course?: unknown; allowedIds?: number[] } = {}) {
+    const course = {
+      findMany: jest.fn(async (args: { select?: unknown }) =>
+        args.select ? (overrides.allowedIds ?? []).map((id) => ({ id })) : [],
+      ),
+      findUnique: jest.fn(async () => overrides.course ?? null),
+    };
+    const remotePrisma = {
+      client: { course, student: { findMany: jest.fn(async () => []) } },
+      ping: jest.fn(async () => true),
+    };
+    const studentsService = {
+      replaceCourse: jest.fn(async () => ({ synced: 0, removed: 0 })),
+      listSyncedCourses: jest.fn(async () => [
+        { courseId: 1, courseName: 'Evento', studentsCount: 1, lastSyncedAt: new Date() },
+        { courseId: 2, courseName: 'Formação', studentsCount: 1, lastSyncedAt: new Date() },
+      ]),
+    };
+    const service = new PaiSyncService(remotePrisma as never, studentsService as never);
+    return { service, course, studentsService };
+  }
+
+  describe('listActiveCourses', () => {
+    it('operador restrito a eventos só lista turmas ativas do tipo evento', async () => {
+      const { service, course } = build();
+
+      await service.listActiveCourses({ eventType: 'event' });
+
+      expect(course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { status: true, eventType: 'event' } }),
+      );
+    });
+
+    it('operador sem restrição lista todas as turmas ativas', async () => {
+      const { service, course } = build();
+
+      await service.listActiveCourses({ eventType: null });
+
+      expect(course.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: true } }));
+    });
+  });
+
+  describe('syncCourse', () => {
+    it('recusa (403) turma de formação para operador restrito a eventos, sem baixar nada', async () => {
+      const { service, studentsService } = build({ course: { id: 2, name: 'F', eventType: 'formation' } });
+
+      await expect(service.syncCourse(2, { eventType: 'event' })).rejects.toBeInstanceOf(ForbiddenException);
+      expect(studentsService.replaceCourse).not.toHaveBeenCalled();
+    });
+
+    it('baixa turma de evento para operador restrito a eventos e grava o tipo na réplica', async () => {
+      const { service, studentsService } = build({ course: { id: 1, name: 'E', eventType: 'event' } });
+
+      await service.syncCourse(1, { eventType: 'event' });
+
+      expect(studentsService.replaceCourse).toHaveBeenCalledWith(1, []);
+    });
+
+    it('sem escopo (download do login) baixa qualquer tipo', async () => {
+      const { service, studentsService } = build({ course: { id: 2, name: 'F', eventType: 'formation' } });
+
+      await service.syncCourse(2);
+
+      expect(studentsService.replaceCourse).toHaveBeenCalled();
+    });
+  });
+
+  describe('syncAllKnownCourses', () => {
+    it('operador restrito só re-sincroniza as turmas conhecidas que o Pai confirma serem do seu tipo', async () => {
+      const { service, studentsService } = build({
+        allowedIds: [1],
+        course: { id: 1, name: 'E', eventType: 'event' },
+      });
+
+      const results = await service.syncAllKnownCourses({ eventType: 'event' });
+
+      expect(results).toHaveLength(1);
+      expect(studentsService.replaceCourse).toHaveBeenCalledTimes(1);
+      expect(studentsService.replaceCourse).toHaveBeenCalledWith(1, []);
+    });
+  });
+});

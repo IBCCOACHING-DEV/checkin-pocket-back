@@ -1,6 +1,8 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Logger, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/auth.guard';
+import { OperatorScope } from '../auth/decorators/operator-scope.decorator';
+import { CourseScope } from '../auth/course-scope';
 import { UpsertStudentsDto } from './dto/upsert-students.dto';
 import { SearchStudentsQueryDto } from './dto/search-students.dto';
 import { StudentsService, StudentSearchResult, SyncedCourseSummary } from './students.service';
@@ -21,8 +23,8 @@ export class StudentsController {
       'Consulta apenas a réplica local (SQLite) — funciona offline. Usada para popular o seletor de turma na tela de check-in.',
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Turmas sincronizadas nesta estação.' })
-  listSyncedCourses(): Promise<SyncedCourseSummary[]> {
-    return this.studentsService.listSyncedCourses();
+  listSyncedCourses(@OperatorScope() scope: CourseScope): Promise<SyncedCourseSummary[]> {
+    return this.studentsService.listSyncedCourses(scope);
   }
 
   @Get('search')
@@ -32,8 +34,11 @@ export class StudentsController {
       'Alternativa ao QR Code para quando o operador não tem o voucher em mãos. Consulta apenas a réplica local (SQLite) — funciona offline. Retorna a turma e o status de check-in de cada resultado.',
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Alunos encontrados na réplica local.' })
-  search(@Query() query: SearchStudentsQueryDto): Promise<StudentSearchResult[]> {
-    return this.studentsService.search(query.q);
+  search(
+    @Query() query: SearchStudentsQueryDto,
+    @OperatorScope() scope: CourseScope,
+  ): Promise<StudentSearchResult[]> {
+    return this.studentsService.search(query.q, scope);
   }
 
   @Post('sync')

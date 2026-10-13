@@ -1,6 +1,8 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/auth.guard';
+import { OperatorScope } from '../auth/decorators/operator-scope.decorator';
+import { CourseScope } from '../auth/course-scope';
 import { TicketTransferService } from './ticket-transfer.service';
 import { SearchTransferQueryDto } from './dto/search-transfer.dto';
 import { RequestTransferDto } from './dto/request-transfer.dto';
@@ -21,8 +23,11 @@ export class TicketTransferController {
       'Consulta direta no banco do Pai (MySQL, somente leitura) — não depende da réplica local, funciona mesmo para turmas nunca sincronizadas nesta estação.',
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Ingressos encontrados para o CPF informado.' })
-  search(@Query() query: SearchTransferQueryDto): Promise<TransferSearchResult[]> {
-    return this.ticketTransferService.searchByDocument(query.document);
+  search(
+    @Query() query: SearchTransferQueryDto,
+    @OperatorScope() scope: CourseScope,
+  ): Promise<TransferSearchResult[]> {
+    return this.ticketTransferService.searchByDocument(query.document, scope);
   }
 
   @Post('request')
@@ -33,8 +38,9 @@ export class TicketTransferController {
       'Grava a solicitação localmente e publica `transfer.requested` no RabbitMQ. NÃO espera o Checkin Pai/Coliseum — responde imediatamente com status "pending". Use GET /ticket-transfer/:id para acompanhar o resultado.',
   })
   @ApiResponse({ status: HttpStatus.ACCEPTED, description: 'Solicitação registrada, aguardando processamento.' })
-  requestTransfer(@Body() dto: RequestTransferDto): Promise<TransferStatus> {
-    return this.ticketTransferService.requestTransfer(dto);
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Ingresso de turma fora do perfil de acesso do operador.' })
+  requestTransfer(@Body() dto: RequestTransferDto, @OperatorScope() scope: CourseScope): Promise<TransferStatus> {
+    return this.ticketTransferService.requestTransfer(dto, scope);
   }
 
   @Get(':id')

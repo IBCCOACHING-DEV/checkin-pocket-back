@@ -15,6 +15,7 @@ import { CheckinModule } from './checkin/checkin.module';
 import { AuthSyncModule } from './auth-sync/auth-sync.module';
 import { PaiSyncModule } from './pai-sync/pai-sync.module';
 import { TicketTransferModule } from './ticket-transfer/ticket-transfer.module';
+import { StudentRegistrationModule } from './student-registration/student-registration.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { TicketTransferModule } from './ticket-transfer/ticket-transfer.module';
     AuthSyncModule,
     PaiSyncModule,
     TicketTransferModule,
+    StudentRegistrationModule,
   ],
 })
 export class AppModule {}

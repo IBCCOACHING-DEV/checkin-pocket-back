@@ -1,6 +1,8 @@
 import { Controller, Get, HttpCode, HttpStatus, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/auth.guard';
+import { OperatorScope } from '../auth/decorators/operator-scope.decorator';
+import { CourseScope } from '../auth/course-scope';
 import { PaiSyncService } from './pai-sync.service';
 import { PaiCourseSummary } from './interfaces/pai-course.interface';
 import { CourseSyncResult } from './interfaces/course-sync-result.interface';
@@ -19,8 +21,8 @@ export class PaiSyncController {
       'Consulta o banco do Pai diretamente (MySQL, somente leitura) e retorna apenas as turmas ativas — usado na tela "Baixar turma". Nunca copia a base inteira.',
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Lista de turmas ativas.' })
-  listCourses(): Promise<PaiCourseSummary[]> {
-    return this.paiSyncService.listActiveCourses();
+  listCourses(@OperatorScope() scope: CourseScope): Promise<PaiCourseSummary[]> {
+    return this.paiSyncService.listActiveCourses(scope);
   }
 
   @Post('courses/:id/sync')
@@ -32,8 +34,12 @@ export class PaiSyncController {
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Turma sincronizada.' })
   @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Course não encontrado no Checkin Pai.' })
-  syncCourse(@Param('id', ParseIntPipe) id: number): Promise<CourseSyncResult> {
-    return this.paiSyncService.syncCourse(id);
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Turma fora do perfil de acesso do operador (tipo de turma).' })
+  syncCourse(
+    @Param('id', ParseIntPipe) id: number,
+    @OperatorScope() scope: CourseScope,
+  ): Promise<CourseSyncResult> {
+    return this.paiSyncService.syncCourse(id, scope);
   }
 
   @Post('courses/sync-all')
@@ -44,7 +50,7 @@ export class PaiSyncController {
       'Repete o download (upsert) de cada turma que esta estação já possui localmente — usado pelo botão "Atualizar turmas baixadas" e automaticamente logo após o login.',
   })
   @ApiResponse({ status: HttpStatus.OK, description: 'Turmas resincronizadas.' })
-  syncAllKnownCourses(): Promise<CourseSyncResult[]> {
-    return this.paiSyncService.syncAllKnownCourses();
+  syncAllKnownCourses(@OperatorScope() scope: CourseScope): Promise<CourseSyncResult[]> {
+    return this.paiSyncService.syncAllKnownCourses(scope);
   }
 }

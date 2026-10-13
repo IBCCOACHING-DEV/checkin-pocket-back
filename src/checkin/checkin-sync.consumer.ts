@@ -136,6 +136,7 @@ export class CheckinSyncConsumer implements OnModuleInit, OnModuleDestroy {
       courseName: message.courseName,
       token: message.studentToken,
       checkedInAt: new Date(message.checkedInAt),
+      labelPrinted: message.labelPrinted ?? true,
     });
 
     this.logger.log(

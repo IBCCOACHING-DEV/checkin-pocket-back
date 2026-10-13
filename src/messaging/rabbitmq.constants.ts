@@ -24,6 +24,17 @@ export const TRANSFER_REQUESTED_ROUTING_KEY = 'transfer.requested';
 export const TRANSFER_COMPLETED_ROUTING_KEY = 'transfer.completed';
 export const TRANSFER_COMPLETED_DEAD_ROUTING_KEY = 'transfer.completed.dead';
 
+// Cadastro manual de aluno (equivalente ao formulário de cortesia do Checkin
+// Pai): esta estação publica `student.create.requested` (via Outbox) e o
+// Checkin Pai — único consumidor desta routing key, fila própria
+// `student.create.pai` — cria o Student lá com o MESMO token que o Pocket
+// gerou. O resultado volta como `student.create.completed`, que TODAS as
+// estações recebem (fan-out) para trocar o id provisório (negativo) pelo
+// definitivo ou, nas outras estações, passar a conhecer o aluno.
+export const STUDENT_CREATE_REQUESTED_ROUTING_KEY = 'student.create.requested';
+export const STUDENT_CREATE_COMPLETED_ROUTING_KEY = 'student.create.completed';
+export const STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY = 'student.create.completed.dead';
+
 // Dead-letter exchange/queue para print_jobs que esgotaram as tentativas
 // locais de impressão (tolerância a falhas do fluxo de impressão).
 export const PRINT_JOBS_DLX_EXCHANGE = 'ibc.print.dlx';
@@ -48,4 +59,15 @@ export function transferSyncQueueName(agentKey: string): string {
 
 export function transferSyncDeadLetterQueueName(agentKey: string): string {
   return `${transferSyncQueueName(agentKey)}.dlq`;
+}
+
+// Fila DEDICADA por estação para `student.create.completed` (mesmo motivo da
+// fila de transferências: um consumer por fila, cada um só com o que sabe
+// processar).
+export function studentSyncQueueName(agentKey: string): string {
+  return `student.sync.${agentKey}`;
+}
+
+export function studentSyncDeadLetterQueueName(agentKey: string): string {
+  return `${studentSyncQueueName(agentKey)}.dlq`;
 }

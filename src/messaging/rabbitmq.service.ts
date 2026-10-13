@@ -25,6 +25,9 @@ export interface QueueDeclarationOptions {
 export type MessageHandler = (content: Buffer, msg: ConsumeMessage) => Promise<void>;
 
 const RECONNECT_DELAY_MS = 5000;
+// Sem isso, um broker inalcançável (estação offline) só falha depois do
+// timeout de TCP do SO (~20s+ no Windows).
+const CONNECT_TIMEOUT_MS = 10000;
 
 /**
  * Cliente RabbitMQ de baixo nível (amqplib) exposto como provider Nest.
@@ -48,8 +51,11 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
 
   constructor(private readonly configService: ConfigService) {}
 
-  async onModuleInit(): Promise<void> {
-    await this.connect();
+  onModuleInit(): void {
+    // Fire-and-forget deliberado: o boot do Nest (e portanto o app.listen)
+    // NÃO pode esperar o broker — a estação precisa funcionar offline. Se a
+    // conexão falhar, connect() agenda o retry sozinho.
+    void this.connect();
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -78,7 +84,7 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     this.connecting = true;
 
     try {
-      this.connection = await amqp.connect(this.url);
+      this.connection = await amqp.connect(this.url, { timeout: CONNECT_TIMEOUT_MS });
 
       this.connection.on('close', () => {
         this.publishChannel = null;

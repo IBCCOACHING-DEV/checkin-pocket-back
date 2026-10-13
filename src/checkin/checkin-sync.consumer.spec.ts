@@ -86,6 +86,8 @@ describe('CheckinSyncConsumer', () => {
       courseId: 7,
       courseName: 'Turma XPTO',
       token: 'token-123',
+      // Mensagem de estação antiga (sem o campo) = todo check-in imprimia.
+      labelPrinted: true,
       checkedInAt: new Date('2026-08-21T12:00:00.000Z'),
     });
   });

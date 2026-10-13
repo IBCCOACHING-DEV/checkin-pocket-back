@@ -5,6 +5,8 @@ import { LoginDto } from './dto/login.dto';
 import { LoginResult } from './interfaces/login-result.interface';
 import { AuthSyncService } from '../auth-sync/auth-sync.service';
 import { AuthSyncStatus } from '../auth-sync/auth-sync.types';
+import { PaiSyncService } from '../pai-sync/pai-sync.service';
+import { ForceSyncResult } from './interfaces/force-sync-result.interface';
 
 // Este controller NÃO usa @UseGuards(JwtAuthGuard): é ele quem emite os
 // tokens que as demais rotas (checkin/students/print/pai-sync) exigem, e
@@ -15,6 +17,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly authSyncService: AuthSyncService,
+    private readonly paiSyncService: PaiSyncService,
   ) {}
 
   @Post('login')
@@ -46,13 +49,18 @@ export class AuthController {
   @Post('sync')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Força uma sincronização imediata de operadores com o Checkin Pai',
+    summary: 'Força uma sincronização imediata de operadores e baixa as turmas ativas',
     description:
-      'Usado pelo botão "Sincronizar agora" da tela de login — dispara uma tentativa fora do ritmo normal do loop de retry/refresh e retorna o status atualizado.',
+      'Usado pelo botão "Sincronizar agora" da tela de login — dispara uma tentativa fora do ritmo normal do loop de retry/refresh e, se o Checkin Pai respondeu, já baixa/atualiza todas as turmas ativas (o operador ainda não tem JWT nesse momento, por isso o download roda aqui no servidor local). Retorna o status atualizado.',
   })
-  @ApiResponse({ status: HttpStatus.OK, description: 'Status atualizado após a tentativa (ver campo "lastError" para saber se falhou).' })
-  async forceSync(): Promise<AuthSyncStatus> {
+  @ApiResponse({ status: HttpStatus.OK, description: 'Status atualizado após a tentativa (ver campo "lastError" para saber se falhou e "coursesSync" para o resultado do download das turmas).' })
+  async forceSync(): Promise<ForceSyncResult> {
     await this.authSyncService.forceSync();
-    return this.authSyncService.getStatus();
+    const status = await this.authSyncService.getStatus();
+
+    // Pai inalcançável: não adianta tentar baixar turmas (só somaria outro timeout).
+    const coursesSync = status.lastError ? null : await this.paiSyncService.syncActiveCourses();
+
+    return { ...status, coursesSync };
   }
 }

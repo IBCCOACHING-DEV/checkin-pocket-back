@@ -1,10 +1,17 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LocalPrismaService } from '../database/local-prisma.service';
 import { LocalTransactionClient } from '../database/local-prisma.types';
 import { RemotePaiPrismaService } from '../database/remote-prisma.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { StudentsService } from '../students/students.service';
+import { CourseScope, isCourseAllowed } from '../auth/course-scope';
 import { TRANSFER_REQUESTED_ROUTING_KEY } from '../messaging/rabbitmq.constants';
 import { TransferRequestedMessage } from '../messaging/types';
 import { RequestTransferDto } from './dto/request-transfer.dto';
@@ -51,13 +58,22 @@ export class TicketTransferService {
    * Busca o(s) ingresso(s) associados a um CPF diretamente no banco do
    * Pai (MySQL, somente leitura) — não depende da réplica local, então
    * funciona mesmo para turmas que esta estação nunca sincronizou.
+   *
+   * Só considera ingressos de turmas ATIVAS (`Course.status = true`, mesmo
+   * critério de `PaiSyncService#listActiveCourses`): transferir ingresso de
+   * uma turma encerrada não faz sentido no credenciamento do evento. Para
+   * operador restrito (staff/user com tipo event/formation), também só do
+   * mesmo `event_type`, como na CoursePolicy::Scope do Pai.
    */
-  async searchByDocument(document: string): Promise<TransferSearchResult[]> {
+  async searchByDocument(document: string, scope?: CourseScope): Promise<TransferSearchResult[]> {
     const cleanedDocument = document.replace(/\D/g, '');
 
     const students = await this.queryPai(() =>
       this.remotePrisma.client.student.findMany({
-        where: { document: cleanedDocument },
+        where: {
+          document: cleanedDocument,
+          course: { is: { status: true, ...(scope?.eventType ? { eventType: scope.eventType } : {}) } },
+        },
         include: { course: true },
       }),
     );
@@ -81,7 +97,9 @@ export class TicketTransferService {
    * no Checkin Pai, depois que o OutboxPublisherWorker publicar o evento
    * no RabbitMQ.
    */
-  async requestTransfer(dto: RequestTransferDto): Promise<TransferStatus> {
+  async requestTransfer(dto: RequestTransferDto, scope?: CourseScope): Promise<TransferStatus> {
+    await this.assertCourseAllowed(dto.courseId, scope);
+
     return this.prisma.$transaction(async (tx: LocalTransactionClient) => {
       const transfer = await tx.ticketTransfer.create({
         data: {
@@ -183,6 +201,33 @@ export class TicketTransferService {
       resolvedAt: transfer.resolvedAt,
       appliedLocally,
     };
+  }
+
+  /**
+   * Barra a solicitação de operador restrito para turma fora do seu perfil
+   * (a busca já filtra; isto cobre chamadas diretas à API). Só consulta o
+   * tipo da turma quando há restrição; usa o Pai (fonte da verdade) e, se
+   * estiver inalcançável, o tipo guardado na réplica local.
+   */
+  private async assertCourseAllowed(courseId: number, scope?: CourseScope): Promise<void> {
+    if (!scope?.eventType) {
+      return;
+    }
+
+    let courseEventType: string | null | undefined;
+    try {
+      const course = await this.remotePrisma.client.course.findUnique({
+        where: { id: courseId },
+        select: { eventType: true },
+      });
+      courseEventType = course?.eventType;
+    } catch {
+      courseEventType = (await this.studentsService.findCourseContext(courseId))?.courseEventType;
+    }
+
+    if (!isCourseAllowed(scope, courseEventType)) {
+      throw new ForbiddenException('Este ingresso pertence a uma turma fora do seu perfil de acesso.');
+    }
   }
 
   private async queryPai<T>(query: () => Promise<T>): Promise<T> {

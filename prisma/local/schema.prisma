@@ -32,14 +32,26 @@ model Student {
   courseEventDate    String?   @map("course_event_date")
   /// Data de término da turma (mesmo formato de courseEventDate).
   courseEventDateEnd String?   @map("course_event_date_end")
+  /// Tipo da turma no Checkin Pai (`Course.event_type`: "event" ou "formation"),
+  /// denormalizado para restringir o que cada operador enxerga (espelha a
+  /// CoursePolicy::Scope do Pai). Nulo em registros antigos até o próximo
+  /// download da turma — operador restrito NÃO enxerga alunos sem tipo.
+  courseEventType    String?   @map("course_event_type")
   name          String
   email         String?
   document      String?
   token         String    @unique
   ibcCustomerId Int?      @map("ibc_customer_id")
+  /// Já teve ao menos uma presença registrada (qualquer dia do evento).
   checkedIn     Boolean   @default(false) @map("checked_in")
+  /// Instante da presença MAIS RECENTE — evento de vários dias gera uma
+  /// presença por dia (espelha as DailyPresence do Checkin Pai). É por ele que
+  /// se sabe se o aluno já foi credenciado HOJE.
   checkedInAt   DateTime? @map("checked_in_at")
-  syncedAt      DateTime  @default(now()) @map("synced_at")
+  /// A etiqueta já foi enviada para impressão (espelha `tag_printer` do Pai).
+  /// Só imprime enquanto false; nos demais dias apenas a presença é registrada.
+  labelPrinted  Boolean   @default(false) @map("label_printed")
+  syncedAt     DateTime  @default(now()) @map("synced_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
   printJobs PrintJob[]
@@ -213,4 +225,38 @@ model OutboxEvent {
 
   @@index([status, createdAt])
   @@map("outbox_events")
+}
+
+/// Cadastro manual de aluno feito NESTA estação (equivalente ao formulário
+/// de cortesia do Checkin Pai). O `Student` local nasce com id provisório
+/// NEGATIVO e o mesmo `token` que o Pai vai usar; o `student.create.completed`
+/// do Pai troca o id pelo definitivo. Só existe na estação que originou o
+/// cadastro — serve para rastrear o resultado assíncrono (pending/completed/failed).
+model StudentRegistration {
+  id                String    @id @default(uuid())
+  /// Token do voucher gerado pelo Pocket (UUID); o Pai o reaproveita — o QR impresso continua válido.
+  token             String    @unique
+  courseId          Int       @map("course_id")
+  /// ID local (provisório, negativo) do Student criado na estação.
+  localStudentId    Int       @map("local_student_id")
+  /// ID definitivo do Student no Checkin Pai, preenchido na confirmação.
+  paiStudentId      Int?      @map("pai_student_id")
+  status            String    @default("pending") // pending | completed | failed
+  name              String
+  nickName          String    @map("nick_name")
+  document          String
+  email             String
+  phone             String?
+  ownerName         String?   @map("owner_name")
+  ownerDocument     String?   @map("owner_document")
+  note              String?
+  errorMessage      String?   @map("error_message")
+  sourceAgentKey    String    @map("source_agent_key")
+  resolvedAt        DateTime? @map("resolved_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("student_registrations")
 }

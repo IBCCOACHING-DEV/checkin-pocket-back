@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -64,6 +65,22 @@ export class StudentReplicaDto {
   @IsOptional()
   @IsString()
   courseEventDateEnd?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Tipo da turma no Checkin Pai ("event" ou "formation") — restringe o que cada operador enxerga.',
+  })
+  @IsOptional()
+  @IsString()
+  courseEventType?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'A etiqueta deste aluno já foi impressa (tag_printer no Checkin Pai) — o check-in só registra a presença.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  labelPrinted?: boolean;
 }
 
 /**

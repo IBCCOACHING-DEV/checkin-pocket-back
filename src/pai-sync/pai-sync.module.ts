@@ -12,5 +12,7 @@ import { StudentsModule } from '../students/students.module';
   imports: [StudentsModule],
   controllers: [PaiSyncController],
   providers: [PaiSyncService],
+  // Usado pelo AuthController: o "Sincronizar agora" do login também baixa as turmas ativas.
+  exports: [PaiSyncService],
 })
 export class PaiSyncModule {}

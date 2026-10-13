@@ -10,8 +10,10 @@ import { LocalPrintWorkerService } from '../local-print/local-print-worker.servi
 import { OutboxService } from '../outbox/outbox.service';
 import { CHECKIN_PERFORMED_ROUTING_KEY } from '../messaging/rabbitmq.constants';
 import { CheckinPerformedMessage } from '../messaging/types';
+import { CourseScope, isCourseAllowed } from '../auth/course-scope';
 import { CheckinRequestDto } from './dto/checkin-request.dto';
 import { CheckinResult } from './interfaces/checkin-result.interface';
+import { localIsoDate } from './local-date';
 
 @Injectable()
 export class CheckinService {
@@ -34,7 +36,7 @@ export class CheckinService {
     return this.configService.get<string>('print.defaultPrinter', '');
   }
 
-  async performCheckin(dto: CheckinRequestDto): Promise<CheckinResult> {
+  async performCheckin(dto: CheckinRequestDto, scope?: CourseScope): Promise<CheckinResult> {
     const student = await this.studentsService.findByToken(dto.studentToken);
 
     if (!student) {
@@ -42,6 +44,17 @@ export class CheckinService {
       return {
         success: false,
         message: 'Aluno não encontrado na base local. Sincronize os ingressos antes do check-in.',
+      };
+    }
+    if (!isCourseAllowed(scope, student.courseEventType)) {
+      // Mesmo texto genérico de "não encontrado" no log do operador, sem revelar dados do aluno de outro perfil.
+      this.logger.warn(
+        `Check-in recusado — aluno=${student.id} está em turma fora do perfil do operador (tipo "${student.courseEventType ?? 'desconhecido'}").`,
+      );
+      return {
+        success: false,
+        message:
+          'Este aluno pertence a uma turma fora do seu perfil de acesso. Se ele for do seu perfil, use "Atualizar turmas" e tente de novo.',
       };
     }
     if (dto.courseId !== undefined && student.courseId !== dto.courseId) {
@@ -54,12 +67,12 @@ export class CheckinService {
       };
     }
 
-    if (student.checkedIn) {
-      this.logger.log(`Check-in ignorado — aluno=${student.id} (${student.name}) já credenciado anteriormente.`);
+    if (this.isCheckedInToday(student)) {
+      this.logger.log(`Check-in ignorado — aluno=${student.id} (${student.name}) já credenciado hoje.`);
       return {
         success: true,
         alreadyCheckedIn: true,
-        message: 'Aluno já credenciado anteriormente.',
+        message: 'Aluno já credenciado hoje.',
         studentId: student.id,
         studentName: student.name,
         courseName: student.courseName,
@@ -79,20 +92,26 @@ export class CheckinService {
     }
 
     const checkedInAt = new Date();
+    // A etiqueta só sai uma vez: nos demais dias do evento o check-in apenas
+    // registra a presença (espelha `tag_printer` no Checkin Pai).
+    const shouldPrint = !student.labelPrinted;
     const printerUid = dto.printerUid?.trim() || this.defaultPrinterUid;
-    const idempotencyKey = `pocket-${this.agentKey}-${student.id}-${randomUUID()}`;
 
     const printJobId = await this.prisma.$transaction(async (tx: LocalTransactionClient) => {
-      await this.studentsService.markCheckedIn(tx, student.id, checkedInAt);
+      await this.studentsService.markCheckedIn(tx, student.id, checkedInAt, shouldPrint);
 
-      const printJob = await this.printJobsService.createPendingJob(tx, {
-        studentId: student.id,
-        courseId: student.courseId,
-        targetPrinterUid: printerUid,
-        labelName: student.name,
-        labelCourseName: student.courseName,
-        idempotencyKey,
-      });
+      let createdPrintJobId: number | undefined;
+      if (shouldPrint) {
+        const printJob = await this.printJobsService.createPendingJob(tx, {
+          studentId: student.id,
+          courseId: student.courseId,
+          targetPrinterUid: printerUid,
+          labelName: student.name,
+          labelCourseName: student.courseName,
+          idempotencyKey: `pocket-${this.agentKey}-${student.id}-${randomUUID()}`,
+        });
+        createdPrintJobId = printJob.id;
+      }
 
       const message: CheckinPerformedMessage = {
         eventId: randomUUID(),
@@ -104,6 +123,7 @@ export class CheckinService {
         checkedInAt: checkedInAt.toISOString(),
         sourceAgentKey: this.agentKey,
         occurredAt: new Date().toISOString(),
+        labelPrinted: shouldPrint,
       };
 
       await this.outboxService.record(tx, {
@@ -114,27 +134,46 @@ export class CheckinService {
         payload: message,
       });
 
-      return printJob.id;
+      return createdPrintJobId;
     });
 
-    // Acorda o worker de impressão local imediatamente em vez de esperar o
-    // próximo tick do polling (até 2s) — maior parte da latência entre
-    // clicar em "Credenciar" e a etiqueta sair da impressora.
-    this.printWorker.triggerNow();
+    if (shouldPrint) {
+      // Acorda o worker de impressão local imediatamente em vez de esperar o
+      // próximo tick do polling (até 2s) — maior parte da latência entre
+      // clicar em "Credenciar" e a etiqueta sair da impressora.
+      this.printWorker.triggerNow();
+    }
 
     this.logger.log(
-      `Check-in realizado — aluno=${student.id} (${student.name}) turma="${student.courseName}" print_job=${printJobId}. TS_TRIGGER=${Date.now()}`,
+      shouldPrint
+        ? `Check-in realizado — aluno=${student.id} (${student.name}) turma="${student.courseName}" print_job=${printJobId}. TS_TRIGGER=${Date.now()}`
+        : `Presença registrada — aluno=${student.id} (${student.name}) turma="${student.courseName}"; etiqueta já impressa antes, nada a imprimir.`,
     );
 
     return {
       success: true,
-      message: 'Check-in realizado com sucesso.',
+      message: shouldPrint
+        ? 'Check-in realizado com sucesso.'
+        : 'Presença registrada. A etiqueta já havia sido impressa — nenhuma nova etiqueta foi gerada.',
       studentId: student.id,
       studentName: student.name,
       courseName: student.courseName,
+      labelPrinted: shouldPrint,
       printJobId,
     };
   }
+
+  /**
+   * `checkedInAt` é a presença mais recente: se cai no dia de hoje, o aluno já
+   * foi credenciado hoje. Aluno marcado sem data (legado) conta como já presente.
+   */
+  private isCheckedInToday(student: Student): boolean {
+    if (!student.checkedIn) {
+      return false;
+    }
+    return !student.checkedInAt || localIsoDate(student.checkedInAt) === this.todayIsoDate();
+  }
+
   private validateCourseWindow(student: Student): string | null {
     const { courseEventDate, courseEventDateEnd } = student;
     if (!courseEventDate && !courseEventDateEnd) {
@@ -155,11 +194,7 @@ export class CheckinService {
   }
 
   private todayIsoDate(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return localIsoDate();
   }
 
   private formatBrDate(isoDate: string): string {

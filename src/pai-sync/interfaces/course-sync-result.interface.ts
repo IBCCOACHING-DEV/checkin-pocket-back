@@ -1,3 +1,15 @@
+/** Resumo do download das turmas ativas disparado pelo "Sincronizar agora" do login. */
+export interface ActiveCoursesSyncSummary {
+  /** Quantas turmas ativas existem no Checkin Pai. */
+  total: number;
+  /** Quantas foram baixadas/atualizadas com sucesso. */
+  synced: number;
+  /** Quantas falharam (as demais seguem normalmente — falha isolada por turma). */
+  failed: number;
+  /** Preenchido quando nem foi possível consultar o Pai (rede indisponível). */
+  error: string | null;
+}
+
 export interface CourseSyncResult {
   courseId: number;
   courseName: string;
@@ -5,6 +17,8 @@ export interface CourseSyncResult {
   totalStudents: number;
   /** Quantos foram gravados/atualizados na réplica local. */
   synced: number;
+  /** Quantos alunos que não existem mais nesta turma no Checkin Pai foram removidos da réplica local. */
+  removed: number;
   /** Quantos foram ignorados (sem nome ou sem token — não localizáveis via QR Code). */
   skipped: number;
 }

@@ -79,6 +79,48 @@ describe('CheckinService', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  describe('escopo de turmas do operador (espelha a CoursePolicy do Pai)', () => {
+    it('recusa aluno de turma de formação para operador restrito a eventos', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseEventType: 'formation' });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' }, { eventType: 'event' });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('fora do seu perfil');
+      expect(result.studentName).toBeUndefined();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('recusa aluno sem tipo de turma conhecido para operador restrito', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseEventType: null });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' }, { eventType: 'event' });
+
+      expect(result.success).toBe(false);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('credencia aluno de evento para operador restrito a eventos', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseEventType: 'event' });
+      printJobsService.createPendingJob.mockResolvedValue({ id: 1 });
+      outboxService.record.mockResolvedValue({ id: 'o' });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' }, { eventType: 'event' });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('operador sem restrição credencia qualquer tipo, inclusive desconhecido', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseEventType: null });
+      printJobsService.createPendingJob.mockResolvedValue({ id: 1 });
+      outboxService.record.mockResolvedValue({ id: 'o' });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' }, { eventType: null });
+
+      expect(result.success).toBe(true);
+    });
+  });
+
   it('é idempotente quando o aluno já está credenciado (não duplica job nem evento)', async () => {
     studentsService.findByToken.mockResolvedValue({ ...mockStudent, checkedIn: true });
 
@@ -115,6 +157,7 @@ describe('CheckinService', () => {
       expect.anything(),
       42,
       expect.any(Date),
+      true,
     );
 
     expect(printJobsService.createPendingJob).toHaveBeenCalledWith(
@@ -139,6 +182,81 @@ describe('CheckinService', () => {
     );
 
     expect(printWorker.triggerNow).toHaveBeenCalledTimes(1);
+  });
+
+  describe('etiqueta impressa uma única vez (eventos de vários dias)', () => {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    it('no 1º check-in imprime a etiqueta e marca labelPrinted', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, labelPrinted: false });
+      printJobsService.createPendingJob.mockResolvedValue({ id: 5 });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(result).toEqual(expect.objectContaining({ success: true, labelPrinted: true, printJobId: 5 }));
+      expect(studentsService.markCheckedIn).toHaveBeenCalledWith(expect.anything(), 42, expect.any(Date), true);
+      expect(printWorker.triggerNow).toHaveBeenCalledTimes(1);
+      expect(outboxService.record).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ payload: expect.objectContaining({ labelPrinted: true }) }),
+      );
+    });
+
+    it('em outro dia, com etiqueta já impressa, registra só a presença (sem print_job)', async () => {
+      studentsService.findByToken.mockResolvedValue({
+        ...mockStudent,
+        checkedIn: true,
+        checkedInAt: yesterday,
+        labelPrinted: true,
+      });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(result.success).toBe(true);
+      expect(result.alreadyCheckedIn).toBeUndefined();
+      expect(result.labelPrinted).toBe(false);
+      expect(result.printJobId).toBeUndefined();
+      expect(studentsService.markCheckedIn).toHaveBeenCalledWith(expect.anything(), 42, expect.any(Date), false);
+      expect(printJobsService.createPendingJob).not.toHaveBeenCalled();
+      expect(printWorker.triggerNow).not.toHaveBeenCalled();
+      // A presença continua indo para o Pai/outras estações.
+      expect(outboxService.record).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          routingKey: 'checkin.performed',
+          payload: expect.objectContaining({ labelPrinted: false }),
+        }),
+      );
+    });
+
+    it('em outro dia, se a etiqueta NÃO foi impressa (job morreu), imprime de novo', async () => {
+      studentsService.findByToken.mockResolvedValue({
+        ...mockStudent,
+        checkedIn: true,
+        checkedInAt: yesterday,
+        labelPrinted: false,
+      });
+      printJobsService.createPendingJob.mockResolvedValue({ id: 8 });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(result).toEqual(expect.objectContaining({ success: true, labelPrinted: true, printJobId: 8 }));
+    });
+
+    it('segunda leitura no MESMO dia continua idempotente (nem presença nem etiqueta)', async () => {
+      studentsService.findByToken.mockResolvedValue({
+        ...mockStudent,
+        checkedIn: true,
+        checkedInAt: new Date(),
+        labelPrinted: true,
+      });
+
+      const result = await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(result.alreadyCheckedIn).toBe(true);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(outboxService.record).not.toHaveBeenCalled();
+    });
   });
 
   function isoDateOffsetFromToday(days: number): string {

@@ -88,10 +88,22 @@ export class LocalPrintJobsService {
     });
   }
 
-  markDead(printJobId: number, attemptCount: number, resultJson: string): Promise<PrintJob> {
-    return this.prisma.printJob.update({
+  /**
+   * Marca o job como `dead` e devolve a etiqueta do aluno ao estado "não
+   * impressa": sem isso o aluno nunca mais teria etiqueta, já que o check-in
+   * dos próximos dias só registra presença quando `labelPrinted` é true.
+   */
+  async markDead(printJobId: number, attemptCount: number, resultJson: string): Promise<PrintJob> {
+    const job = await this.prisma.printJob.update({
       where: { id: printJobId },
       data: { status: 'dead', attemptCount, resultJson },
     });
+    if (job.studentId !== null) {
+      await this.prisma.student.updateMany({
+        where: { id: job.studentId },
+        data: { labelPrinted: false },
+      });
+    }
+    return job;
   }
 }

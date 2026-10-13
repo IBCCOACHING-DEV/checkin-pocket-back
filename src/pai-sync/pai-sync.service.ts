@@ -1,9 +1,16 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { CourseScope, isCourseAllowed } from '../auth/course-scope';
 import { RemotePaiPrismaService } from '../database/remote-prisma.service';
 import { StudentsService } from '../students/students.service';
 import { StudentReplicaDto } from '../students/dto/upsert-students.dto';
 import { PaiCourseSummary } from './interfaces/pai-course.interface';
-import { CourseSyncResult } from './interfaces/course-sync-result.interface';
+import { ActiveCoursesSyncSummary, CourseSyncResult } from './interfaces/course-sync-result.interface';
 
 /**
  * Sincronização SOB DEMANDA de Courses/Students a partir do banco do
@@ -24,10 +31,15 @@ export class PaiSyncService {
     private readonly studentsService: StudentsService,
   ) {}
 
-  async listActiveCourses(): Promise<PaiCourseSummary[]> {
+  /**
+   * Lista as turmas ativas. Com `scope` restrito (operador staff/user com
+   * `course_type` event ou formation), só as turmas do mesmo `event_type` —
+   * mesma regra da CoursePolicy::Scope do Checkin Pai.
+   */
+  async listActiveCourses(scope?: CourseScope): Promise<PaiCourseSummary[]> {
     const courses = await this.queryPai(() =>
       this.remotePrisma.client.course.findMany({
-        where: { status: true },
+        where: { status: true, ...(scope?.eventType ? { eventType: scope.eventType } : {}) },
         orderBy: [{ eventDate: 'asc' }, { name: 'asc' }],
         include: { _count: { select: { students: true } } },
       }),
@@ -45,13 +57,17 @@ export class PaiSyncService {
     }));
   }
 
-  async syncCourse(courseId: number): Promise<CourseSyncResult> {
+  async syncCourse(courseId: number, scope?: CourseScope): Promise<CourseSyncResult> {
     const course = await this.queryPai(() =>
       this.remotePrisma.client.course.findUnique({ where: { id: courseId } }),
     );
 
     if (!course) {
       throw new NotFoundException(`Course ${courseId} não encontrado no Checkin Pai.`);
+    }
+
+    if (!isCourseAllowed(scope, course.eventType)) {
+      throw new ForbiddenException('Esta turma está fora do seu perfil de acesso.');
     }
 
     const students = await this.queryPai(() =>
@@ -81,13 +97,17 @@ export class PaiSyncService {
       replica.ibcCustomerId = student.ibcCustomerId ?? undefined;
       replica.courseEventDate = course.eventDate ?? undefined;
       replica.courseEventDateEnd = course.eventDateEnd ?? undefined;
+      replica.courseEventType = course.eventType ?? undefined;
+      replica.labelPrinted = student.tagPrinter === true;
       replicas.push(replica);
     }
 
-    const synced = replicas.length > 0 ? await this.studentsService.upsertMany(replicas) : 0;
+    // Mesmo com a lista vazia: se a turma foi esvaziada no Pai, a réplica
+    // local também precisa ser esvaziada (senão sobram alunos "fantasma").
+    const { synced, removed } = await this.studentsService.replaceCourse(courseId, replicas);
 
     this.logger.log(
-      `Turma "${courseName}" (id=${courseId}) sincronizada: ${synced} aluno(s), ${skipped} ignorado(s) (sem nome/token).`,
+      `Turma "${courseName}" (id=${courseId}) sincronizada: ${synced} aluno(s), ${removed} removido(s), ${skipped} ignorado(s) (sem nome/token).`,
     );
 
     return {
@@ -95,11 +115,57 @@ export class PaiSyncService {
       courseName,
       totalStudents: students.length,
       synced,
+      removed,
       skipped,
     };
   }
-  async syncAllKnownCourses(): Promise<CourseSyncResult[]> {
-    const localCourses = await this.studentsService.listSyncedCourses();
+
+  /**
+   * Baixa/atualiza TODAS as turmas ativas do Checkin Pai (não só as que a
+   * estação já conhecia) — usado pelo "Sincronizar agora" da tela de login,
+   * para que a estação já saia dali pronta para credenciar.
+   *
+   * Nunca lança: o login não pode falhar nem travar por causa da rede. Se o
+   * Pai estiver inalcançável, o motivo volta em `error`; se uma turma
+   * falhar, as demais continuam (falha isolada por turma, como em
+   * `syncAllKnownCourses`).
+   */
+  async syncActiveCourses(): Promise<ActiveCoursesSyncSummary> {
+    let activeCourses: PaiCourseSummary[];
+    try {
+      activeCourses = await this.listActiveCourses();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { total: 0, synced: 0, failed: 0, error: message };
+    }
+
+    let synced = 0;
+    let failed = 0;
+    for (const course of activeCourses) {
+      try {
+        await this.syncCourse(course.id);
+        synced += 1;
+      } catch (error) {
+        failed += 1;
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Falha ao baixar turma ativa ${course.id} (${course.name}): ${message}`);
+      }
+    }
+
+    this.logger.log(
+      `Turmas ativas baixadas: ${synced}/${activeCourses.length} (${failed} falha(s)).`,
+    );
+    return { total: activeCourses.length, synced, failed, error: null };
+  }
+
+  /**
+   * Re-sincroniza as turmas que esta estação já baixou. Para operador
+   * restrito, só as que estão no escopo dele — conferido no Pai (e não na
+   * réplica), porque o tipo de turmas baixadas antes deste recurso ainda é
+   * desconhecido localmente.
+   */
+  async syncAllKnownCourses(scope?: CourseScope): Promise<CourseSyncResult[]> {
+    let localCourses = await this.studentsService.listSyncedCourses();
     if (localCourses.length === 0) {
       return [];
     }
@@ -111,10 +177,22 @@ export class PaiSyncService {
       );
     }
 
+    if (scope?.eventType) {
+      const knownIds = localCourses.map((course) => course.courseId);
+      const allowed = await this.queryPai(() =>
+        this.remotePrisma.client.course.findMany({
+          where: { id: { in: knownIds }, eventType: scope.eventType as string },
+          select: { id: true },
+        }),
+      );
+      const allowedIds = new Set(allowed.map((course) => course.id));
+      localCourses = localCourses.filter((course) => allowedIds.has(course.courseId));
+    }
+
     const results: CourseSyncResult[] = [];
     for (const course of localCourses) {
       try {
-        results.push(await this.syncCourse(course.courseId));
+        results.push(await this.syncCourse(course.courseId, scope));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.error(
@@ -125,6 +203,7 @@ export class PaiSyncService {
 
     return results;
   }
+
   private async queryPai<T>(query: () => Promise<T>): Promise<T> {
     try {
       return await query();
