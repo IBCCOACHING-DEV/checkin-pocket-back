@@ -372,3 +372,53 @@ describe('StudentsService — escopo de turmas do operador', () => {
   });
 });
 
+
+describe('StudentsService — cidade do evento (courseCity)', () => {
+  function build() {
+    const tx = { student: { findMany: jest.fn(async () => []), deleteMany: jest.fn(async () => ({ count: 0 })), upsert: jest.fn() } };
+    const prisma = {
+      $transaction: jest.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+      student: { findFirst: jest.fn() },
+    };
+    return { service: new StudentsService(prisma as never), tx, prisma };
+  }
+
+  it('o download grava a cidade no create e a atualiza no update', async () => {
+    const { service, tx } = build();
+    const item = replica(1);
+    item.courseCity = 'Goiânia - GO';
+
+    await service.replaceCourse(939, [item]);
+
+    const args = tx.student.upsert.mock.calls[0][0];
+    expect(args.create.courseCity).toBe('Goiânia - GO');
+    expect(args.update.courseCity).toBe('Goiânia - GO');
+  });
+
+  it('consulta da cidade que falhou (sem courseCity) NÃO apaga a cidade já gravada', async () => {
+    const { service, tx } = build();
+
+    await service.replaceCourse(939, [replica(1)]);
+
+    const args = tx.student.upsert.mock.calls[0][0];
+    expect(args.create.courseCity).toBeNull();
+    expect(args.update).not.toHaveProperty('courseCity');
+  });
+
+  it('findCourseCity devolve a cidade de qualquer aluno da turma que a tenha', async () => {
+    const { service, prisma } = build();
+    prisma.student.findFirst.mockResolvedValue({ courseCity: 'Curitiba - PR' });
+
+    await expect(service.findCourseCity(939)).resolves.toBe('Curitiba - PR');
+    expect(prisma.student.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { courseId: 939, courseCity: { not: null } } }),
+    );
+  });
+
+  it('findCourseCity devolve null quando nenhum aluno da turma tem cidade', async () => {
+    const { service, prisma } = build();
+    prisma.student.findFirst.mockResolvedValue(null);
+
+    await expect(service.findCourseCity(939)).resolves.toBeNull();
+  });
+});

@@ -96,6 +96,11 @@ export class CheckinService {
     // registra a presença (espelha `tag_printer` no Checkin Pai).
     const shouldPrint = !student.labelPrinted;
     const printerUid = dto.printerUid?.trim() || this.defaultPrinterUid;
+    // Alunos criados aqui (cadastro manual) ou por outra estação nascem sem
+    // cidade: herda a dos demais alunos da turma. Só consulta se for imprimir.
+    const labelCity = shouldPrint
+      ? (student.courseCity ?? (await this.studentsService.findCourseCity(student.courseId)))
+      : null;
 
     const printJobId = await this.prisma.$transaction(async (tx: LocalTransactionClient) => {
       await this.studentsService.markCheckedIn(tx, student.id, checkedInAt, shouldPrint);
@@ -108,6 +113,8 @@ export class CheckinService {
           targetPrinterUid: printerUid,
           labelName: student.name,
           labelCourseName: student.courseName,
+          labelToken: student.token,
+          labelCity,
           idempotencyKey: `pocket-${this.agentKey}-${student.id}-${randomUUID()}`,
         });
         createdPrintJobId = printJob.id;

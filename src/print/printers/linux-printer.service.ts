@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   IPrinterService,
+  LabelExtras,
   PrinterInfo,
   PrintResult,
 } from './base-printer.interface';
@@ -85,12 +86,13 @@ export class LinuxPrinterService implements IPrinterService {
     printerName: string,
     copies: number = 1,
     course?: string,
+    extras: LabelExtras = {},
   ): Promise<PrintResult> {
     const tempFileName = `print_${Date.now()}.png`;
     const tempImagePath = path.join(process.cwd(), tempFileName);
 
     try {
-      const pngBuffer = renderLabelPng({ name, nickname, course });
+      const pngBuffer = renderLabelPng({ name, nickname, course, ...extras });
       await fs.writeFile(tempImagePath, pngBuffer);
 
       const command = `lp -d "${printerName}" -n ${copies} -o orientation-requested=4 -o position=top-left "${tempImagePath}"`;

@@ -109,6 +109,8 @@ export class LocalPrintWorkerService {
       name: job.labelName,
       nickname: job.labelName,
       course: job.labelCourseName,
+      token: job.labelToken ?? undefined,
+      city: job.labelCity ?? undefined,
       printerName: job.targetPrinterUid,
       copies: 1,
       // Se a 1ª tentativa (attemptCount=0) já usou o caminho raw

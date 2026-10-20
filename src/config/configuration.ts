@@ -37,6 +37,10 @@ export default () => ({
     name: process.env.PAI_DATABASE_NAME,
     user: process.env.PAI_DATABASE_USER,
     password: process.env.PAI_DATABASE_PASSWORD,
+    // Banco do sistema IBC (turmas/ces) NO MESMO servidor MySQL — só lido
+    // para descobrir a cidade do evento impressa na etiqueta
+    // (ver PaiSyncService#fetchCourseCity).
+    ibcName: process.env.PAI_IBC_DATABASE_NAME || 'ibcsystem_production',
   },
   // Sincronização de autenticação (cache local de Operator) a partir do
   // banco do Pai — roda em loop de retry no boot e depois periodicamente.

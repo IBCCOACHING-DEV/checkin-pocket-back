@@ -9,6 +9,10 @@ export interface CreatePrintJobParams {
   targetPrinterUid: string;
   labelName: string;
   labelCourseName: string;
+  /** Conteúdo do QR Code da etiqueta (token do aluno). */
+  labelToken?: string | null;
+  /** Cidade do evento impressa na etiqueta. */
+  labelCity?: string | null;
   idempotencyKey: string;
   maxAttempts?: number;
 }
@@ -44,6 +48,8 @@ export class LocalPrintJobsService {
         targetPrinterUid: params.targetPrinterUid,
         labelName: params.labelName,
         labelCourseName: params.labelCourseName,
+        labelToken: params.labelToken ?? null,
+        labelCity: params.labelCity ?? null,
         mode: 'local',
         status: 'pending',
         maxAttempts: params.maxAttempts ?? 3,

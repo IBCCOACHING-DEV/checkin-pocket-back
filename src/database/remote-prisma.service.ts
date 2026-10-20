@@ -53,6 +53,54 @@ export class RemotePaiPrismaService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Cidade do evento (ex.: "Goiânia - GO") no banco do sistema IBC, que fica
+   * no MESMO servidor MySQL do Checkin Pai: o `online_reference` do Course é o
+   * id da turma (`turmas`), que aponta para o centro de eventos (`ces.cidade`)
+   * — a mesma origem que o Pai usa no voucher. Consulta cross-database pela
+   * conexão já existente, sem credencial nova.
+   *
+   * Nunca lança: a cidade só enfeita a etiqueta, então qualquer falha
+   * (sem permissão de SELECT, banco ausente, rede) vira `null` e o download
+   * da turma segue normalmente.
+   */
+  async findEventCity(onlineReference: number | null | undefined): Promise<string | null> {
+    if (!onlineReference) {
+      return null;
+    }
+
+    const ibcDatabase = this.configService.get<string>('paiDatabase.ibcName');
+    // O nome do banco entra no SQL (não dá para parametrizar identificador).
+    if (!ibcDatabase || !/^[A-Za-z0-9_]+$/.test(ibcDatabase)) {
+      this.warnCityLookupOnce(`PAI_IBC_DATABASE_NAME inválido ("${ibcDatabase}").`);
+      return null;
+    }
+
+    try {
+      const rows = await this.client.$queryRawUnsafe<Array<{ cidade: string | null }>>(
+        `SELECT ces.cidade AS cidade FROM \`${ibcDatabase}\`.turmas t ` +
+          `JOIN \`${ibcDatabase}\`.ces ces ON ces.id = t.ce_id WHERE t.id = ? LIMIT 1`,
+        onlineReference,
+      );
+      return rows[0]?.cidade?.trim() || null;
+    } catch (error) {
+      this.warnCityLookupOnce(this.describeError(error));
+      return null;
+    }
+  }
+
+  private cityLookupWarned = false;
+
+  private warnCityLookupOnce(reason: string): void {
+    if (this.cityLookupWarned) {
+      return;
+    }
+    this.cityLookupWarned = true;
+    this.logger.warn(
+      `Não foi possível ler a cidade do evento no banco do IBC — a etiqueta sai sem a cidade. Motivo: ${reason}`,
+    );
+  }
+
   async onModuleDestroy(): Promise<void> {
     if (this.clientInstance) {
       await this.clientInstance.$disconnect();

@@ -16,6 +16,12 @@ export interface PrintResult {
   timestamp: Date;
 }
 
+/** Campos opcionais da etiqueta além de nome/apelido/turma. */
+export interface LabelExtras {
+  token?: string;
+  city?: string;
+}
+
 export interface IPrinterService {
   getPrinters(): Promise<PrinterInfo[]>;
   printPDF(
@@ -29,6 +35,7 @@ export interface IPrinterService {
     printerName: string,
     copies?: number,
     course?: string,
+    extras?: LabelExtras,
   ): Promise<PrintResult>;
   /**
    * Caminho experimental opt-in (Windows apenas — ver PRINT_USE_RAW_RASTER
@@ -43,6 +50,7 @@ export interface IPrinterService {
     printerName: string,
     copies?: number,
     course?: string,
+    extras?: LabelExtras,
   ): Promise<PrintResult>;
   getDefaultPrinter(): Promise<string>;
 }

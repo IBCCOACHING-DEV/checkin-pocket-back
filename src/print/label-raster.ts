@@ -1,11 +1,7 @@
-import { GlobalFonts, createCanvas } from '@napi-rs/canvas';
-import { join } from 'node:path';
+import { createCanvas } from '@napi-rs/canvas';
+import { LABEL_HEIGHT_DOTS, LABEL_WIDTH_DOTS, LabelContent, renderLabelCanvas } from './label-layout';
 
-export interface LabelContent {
-  name: string;
-  nickname: string;
-  course?: string;
-}
+export type { LabelContent } from './label-layout';
 
 // Protocolo raster da Brother QL-810W (família QL-800/810W/820NWB),
 // confirmado fisicamente nesta estação — valores cross-checados contra a
@@ -32,64 +28,16 @@ const OFFSET_R = 6;
 // nada visível.
 const PRE_FLIP_LEFT_PAD = FULL_LINE_DOTS - ACTIVE_WIDTH_DOTS - OFFSET_R;
 
-const FONT_FAMILY = 'Liberation Sans';
+const THRESHOLD = 128; // limiar fixo preto/branco — sem anti-aliasing em raster puro (o layout é todo preto, ver label-layout.ts)
 
-function registerBundledFonts(): void {
-  if (GlobalFonts.has(FONT_FAMILY)) {
-    return;
-  }
-  const fontsDir = join(__dirname, '../../assets/fonts');
-  GlobalFonts.registerFromPath(join(fontsDir, 'LiberationSans-Regular.ttf'), FONT_FAMILY);
-  GlobalFonts.registerFromPath(join(fontsDir, 'LiberationSans-Bold.ttf'), FONT_FAMILY);
+// O layout (label-layout.ts) é desenhado exatamente na área imprimível
+// desta mídia, em paisagem: comprimento = TOTAL_LINES, largura = ACTIVE_WIDTH_DOTS.
+if (LABEL_WIDTH_DOTS !== TOTAL_LINES || LABEL_HEIGHT_DOTS !== ACTIVE_WIDTH_DOTS) {
+  throw new Error('label-layout.ts e label-raster.ts divergem nas dimensões da etiqueta 29x90mm.');
 }
 
-registerBundledFonts();
-
-// Mesma escala de fontes usada em label-image.ts (CANVAS_WIDTH=3000 pros
-// mesmos 90mm de comprimento), reaplicada em dots nativos (300dpi) em vez
-// de um canvas de tamanho arbitrário.
-const SCALE = TOTAL_LINES / 3000;
-const NICKNAME_FONT_SIZE = Math.round(230 * SCALE);
-const NAME_FONT_SIZE = Math.round(170 * SCALE);
-const COURSE_FONT_SIZE = Math.round(120 * SCALE);
-const NAME_MARGIN_BOTTOM = Math.round(10 * SCALE);
-const LINE_HEIGHT_FACTOR = 1.15;
-const THRESHOLD = 128; // limiar fixo preto/branco — ver label-raster.ts vs label-image.ts (sem anti-aliasing em raster puro)
-
-function renderLandscapeCanvas({ name, nickname, course }: LabelContent) {
-  const nicknameLineHeight = NICKNAME_FONT_SIZE * LINE_HEIGHT_FACTOR;
-  const nameLineHeight = NAME_FONT_SIZE * LINE_HEIGHT_FACTOR + NAME_MARGIN_BOTTOM;
-  const courseLineHeight = course ? COURSE_FONT_SIZE * LINE_HEIGHT_FACTOR : 0;
-  const contentHeight = Math.ceil(nicknameLineHeight + nameLineHeight + courseLineHeight);
-
-  // Canvas em orientação paisagem (largura = comprimento da etiqueta,
-  // altura = largura da etiqueta) — igual a label-image.ts. Rotacionado
-  // 90° logo abaixo pra virar o sistema de coordenadas que o protocolo
-  // raster espera (uma linha raster = uma fatia ao longo do comprimento).
-  const canvas = createCanvas(TOTAL_LINES, ACTIVE_WIDTH_DOTS);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, TOTAL_LINES, ACTIVE_WIDTH_DOTS);
-  ctx.textBaseline = 'top';
-
-  const yStart = Math.max(0, Math.round((ACTIVE_WIDTH_DOTS - contentHeight) / 2));
-  let y = yStart;
-
-  ctx.fillStyle = '#000000';
-  ctx.font = `bold ${NICKNAME_FONT_SIZE}px "${FONT_FAMILY}"`;
-  ctx.fillText(nickname, 0, y);
-  y += nicknameLineHeight;
-
-  ctx.font = `${NAME_FONT_SIZE}px "${FONT_FAMILY}"`;
-  ctx.fillText(name, 0, y);
-  y += nameLineHeight;
-
-  if (course) {
-    ctx.font = `${COURSE_FONT_SIZE}px "${FONT_FAMILY}"`;
-    ctx.fillText(course, 0, y);
-  }
-
-  return canvas;
+function renderLandscapeCanvas(content: LabelContent) {
+  return renderLabelCanvas(content);
 }
 
 /**

@@ -30,4 +30,14 @@ export class PrintTextDto {
   @IsString()
   @IsOptional()
   course?: string;
+
+  /** Conteúdo do QR Code da etiqueta (token do aluno). Sem ele, sem QR. */
+  @IsString()
+  @IsOptional()
+  token?: string;
+
+  /** Cidade do evento (ex.: "Goiânia - GO"). Sem ela, a linha é omitida. */
+  @IsString()
+  @IsOptional()
+  city?: string;
 }

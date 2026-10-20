@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   IPrinterService,
+  LabelExtras,
   PrinterInfo,
   PrintResult,
 } from './base-printer.interface';
@@ -108,13 +109,14 @@ export class WindowsPrinterService implements IPrinterService {
     printerName: string,
     copies: number = 1,
     course?: string,
+    extras: LabelExtras = {},
   ): Promise<PrintResult> {
     const tempPngPath = path.join(process.cwd(), `print_${Date.now()}.png`);
     const overallStart = Date.now();
 
     try {
       const canvasStart = Date.now();
-      const pngBuffer = renderLabelPng({ name, nickname, course });
+      const pngBuffer = renderLabelPng({ name, nickname, course, ...extras });
       const canvasMs = Date.now() - canvasStart;
 
       const writeStart = Date.now();
@@ -179,13 +181,14 @@ export class WindowsPrinterService implements IPrinterService {
     printerName: string,
     copies: number = 1,
     course?: string,
+    extras: LabelExtras = {},
   ): Promise<PrintResult> {
     const tempJobPath = path.join(process.cwd(), `print_raw_${Date.now()}.bin`);
     const overallStart = Date.now();
 
     try {
       const canvasStart = Date.now();
-      const jobBytes = renderLabelRasterCommands({ name, nickname, course });
+      const jobBytes = renderLabelRasterCommands({ name, nickname, course, ...extras });
       const canvasMs = Date.now() - canvasStart;
 
       await fs.writeFile(tempJobPath, jobBytes);

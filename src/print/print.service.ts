@@ -108,6 +108,7 @@ export class PrintService {
             printerName,
             printDto.copies,
             printDto.course,
+            { token: printDto.token, city: printDto.city },
           )
         : await this.printerService.printText(
             printDto.name,
@@ -115,6 +116,7 @@ export class PrintService {
             printerName,
             printDto.copies,
             printDto.course,
+            { token: printDto.token, city: printDto.city },
           );
 
       this.logger.log(`✅ Texto impresso com sucesso - Job: ${result.jobId}`);

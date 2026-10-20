@@ -75,6 +75,7 @@ export class PaiSyncService {
     );
 
     const courseName = course.name ?? `Turma #${course.id}`;
+    const courseCity = await this.remotePrisma.findEventCity(course.onlineReference);
     const replicas: StudentReplicaDto[] = [];
     let skipped = 0;
 
@@ -98,6 +99,7 @@ export class PaiSyncService {
       replica.courseEventDate = course.eventDate ?? undefined;
       replica.courseEventDateEnd = course.eventDateEnd ?? undefined;
       replica.courseEventType = course.eventType ?? undefined;
+      replica.courseCity = courseCity ?? undefined;
       replica.labelPrinted = student.tagPrinter === true;
       replicas.push(replica);
     }

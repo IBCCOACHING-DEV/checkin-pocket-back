@@ -12,6 +12,7 @@ describe('PaiSyncService — escopo de turmas do operador', () => {
     const remotePrisma = {
       client: { course, student: { findMany: jest.fn(async () => []) } },
       ping: jest.fn(async () => true),
+      findEventCity: jest.fn(async (): Promise<string | null> => 'Goiânia - GO'),
     };
     const studentsService = {
       replaceCourse: jest.fn(async () => ({ synced: 0, removed: 0 })),
@@ -21,7 +22,7 @@ describe('PaiSyncService — escopo de turmas do operador', () => {
       ]),
     };
     const service = new PaiSyncService(remotePrisma as never, studentsService as never);
-    return { service, course, studentsService };
+    return { service, course, studentsService, remotePrisma };
   }
 
   describe('listActiveCourses', () => {
@@ -58,6 +59,38 @@ describe('PaiSyncService — escopo de turmas do operador', () => {
       await service.syncCourse(1, { eventType: 'event' });
 
       expect(studentsService.replaceCourse).toHaveBeenCalledWith(1, []);
+    });
+
+    it('grava a cidade do evento (lida pelo online_reference) em cada aluno da réplica', async () => {
+      const { service, studentsService, remotePrisma } = build({
+        course: { id: 1, name: 'E', eventType: 'event', onlineReference: 11229 },
+      });
+      remotePrisma.client.student.findMany.mockResolvedValue([
+        { id: 10, name: 'Ana', token: 'tok-1' },
+      ] as never);
+
+      await service.syncCourse(1);
+
+      expect(remotePrisma.findEventCity).toHaveBeenCalledWith(11229);
+      expect(studentsService.replaceCourse).toHaveBeenCalledWith(1, [
+        expect.objectContaining({ id: 10, courseCity: 'Goiânia - GO' }),
+      ]);
+    });
+
+    it('se a cidade não puder ser lida, baixa a turma mesmo assim (sem courseCity)', async () => {
+      const { service, studentsService, remotePrisma } = build({
+        course: { id: 1, name: 'E', eventType: 'event', onlineReference: 11229 },
+      });
+      remotePrisma.findEventCity.mockResolvedValue(null);
+      remotePrisma.client.student.findMany.mockResolvedValue([
+        { id: 10, name: 'Ana', token: 'tok-1' },
+      ] as never);
+
+      await service.syncCourse(1);
+
+      expect(studentsService.replaceCourse).toHaveBeenCalledWith(1, [
+        expect.objectContaining({ id: 10, courseCity: undefined }),
+      ]);
     });
 
     it('sem escopo (download do login) baixa qualquer tipo', async () => {

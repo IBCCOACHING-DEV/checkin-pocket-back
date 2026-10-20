@@ -26,6 +26,7 @@ describe('CheckinService', () => {
   const studentsService = {
     findByToken: jest.fn(),
     markCheckedIn: jest.fn(),
+    findCourseCity: jest.fn(),
   };
 
   const printJobsService = {
@@ -133,6 +134,38 @@ describe('CheckinService', () => {
     expect(outboxService.record).not.toHaveBeenCalled();
   });
 
+  describe('QR e cidade da etiqueta', () => {
+    beforeEach(() => {
+      printJobsService.createPendingJob.mockResolvedValue({ id: 1 });
+      outboxService.record.mockResolvedValue({ id: 'outbox-1' });
+    });
+
+    it('grava no print_job o token (QR) e a cidade do evento do aluno', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseCity: 'Goiânia - GO' });
+
+      await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(printJobsService.createPendingJob).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ labelToken: 'token-123', labelCity: 'Goiânia - GO' }),
+      );
+      expect(studentsService.findCourseCity).not.toHaveBeenCalled();
+    });
+
+    it('aluno sem cidade (cadastro manual / outra estação) herda a cidade da turma', async () => {
+      studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseCity: null });
+      studentsService.findCourseCity.mockResolvedValue('Curitiba - PR');
+
+      await service.performCheckin({ studentToken: 'token-123' });
+
+      expect(studentsService.findCourseCity).toHaveBeenCalledWith(7);
+      expect(printJobsService.createPendingJob).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ labelCity: 'Curitiba - PR' }),
+      );
+    });
+  });
+
   it('marca presença, cria o print_job e grava o outbox_event em uma única transação', async () => {
     studentsService.findByToken.mockResolvedValue(mockStudent);
     printJobsService.createPendingJob.mockResolvedValue({ id: 99 });
@@ -168,6 +201,7 @@ describe('CheckinService', () => {
         targetPrinterUid: 'HP-1',
         labelName: 'Fulano de Tal',
         labelCourseName: 'Turma XPTO',
+        labelToken: 'token-123',
       }),
     );
 

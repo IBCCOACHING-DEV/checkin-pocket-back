@@ -298,6 +298,7 @@ export class StudentsService {
         courseEventDate: item.courseEventDate ?? null,
         courseEventDateEnd: item.courseEventDateEnd ?? null,
         courseEventType: item.courseEventType ?? null,
+        courseCity: item.courseCity ?? null,
         name: item.name,
         token: item.token,
         email: item.email ?? null,
@@ -311,6 +312,8 @@ export class StudentsService {
         courseEventDate: item.courseEventDate ?? null,
         courseEventDateEnd: item.courseEventDateEnd ?? null,
         courseEventType: item.courseEventType ?? null,
+        // Consulta da cidade falhou (undefined) não apaga a cidade já gravada.
+        ...(item.courseCity ? { courseCity: item.courseCity } : {}),
         name: item.name,
         token: item.token,
         email: item.email ?? null,
@@ -509,6 +512,19 @@ export class StudentsService {
       select: { courseName: true, courseEventDate: true, courseEventDateEnd: true, courseEventType: true },
     });
     return sample;
+  }
+
+  /**
+   * Cidade do evento de uma turma a partir da réplica local: alunos criados
+   * aqui (cadastro manual) ou por outra estação nascem sem `courseCity`, mas
+   * os demais alunos da mesma turma, baixados do Pai, a têm.
+   */
+  async findCourseCity(courseId: number): Promise<string | null> {
+    const sample = await this.prisma.student.findFirst({
+      where: { courseId, courseCity: { not: null } },
+      select: { courseCity: true },
+    });
+    return sample?.courseCity ?? null;
   }
 
   /** Procura um aluno por documento dentro de uma turma (detecção de duplicidade no cadastro manual). */

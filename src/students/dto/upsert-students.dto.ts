@@ -76,6 +76,14 @@ export class StudentReplicaDto {
 
   @ApiProperty({
     required: false,
+    description: 'Cidade do evento (ex.: "Goiânia - GO") impressa na etiqueta. Ausente = não sobrescreve a cidade já gravada.',
+  })
+  @IsOptional()
+  @IsString()
+  courseCity?: string;
+
+  @ApiProperty({
+    required: false,
     description: 'A etiqueta deste aluno já foi impressa (tag_printer no Checkin Pai) — o check-in só registra a presença.',
   })
   @IsOptional()

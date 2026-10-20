@@ -37,6 +37,11 @@ model Student {
   /// CoursePolicy::Scope do Pai). Nulo em registros antigos até o próximo
   /// download da turma — operador restrito NÃO enxerga alunos sem tipo.
   courseEventType    String?   @map("course_event_type")
+  /// Cidade do evento (ex.: "Goiânia - GO"), lida do banco do IBC (ces.cidade)
+  /// no download da turma e impressa na etiqueta. Nulo se a consulta falhou ou
+  /// a turma ainda não foi baixada desde que o campo existe — a etiqueta sai
+  /// sem a linha da cidade.
+  courseCity         String?   @map("course_city")
   name          String
   email         String?
   document      String?
@@ -111,6 +116,10 @@ model PrintJob {
   targetPrinterUid String @map("target_printer_uid")
   labelName        String @map("label_name")
   labelCourseName  String @map("label_course_name")
+  /// Token do aluno (conteúdo do QR Code da etiqueta) e cidade do evento,
+  /// congelados na criação do job — retry/reimpressão não muda a etiqueta.
+  labelToken       String? @map("label_token")
+  labelCity        String? @map("label_city")
   mode             String @default("local")
   priority         Int    @default(0)
   status           String @default("pending") // pending | succeeded | dead
