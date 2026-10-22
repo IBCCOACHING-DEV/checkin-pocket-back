@@ -108,47 +108,47 @@ describe('PaiSyncService — escopo de turmas do operador', () => {
       ctx.course.findMany.mockResolvedValue(
         activeIds.map((id) => ({ id, name: `T${id}`, _count: { students: 0 } })) as never,
       );
-      const removeInactiveCourses = jest.fn(async () => ({ courses: 2, students: 40 }));
-      Object.assign(ctx.studentsService, { removeInactiveCourses });
-      return { ...ctx, removeInactiveCourses };
+      const syncCourseVisibility = jest.fn(async () => ({ hiddenCourses: 2, hiddenStudents: 40 }));
+      Object.assign(ctx.studentsService, { syncCourseVisibility });
+      return { ...ctx, syncCourseVisibility };
     }
 
-    it('remove da estação as turmas fora da lista de ativas e informa o total removido', async () => {
-      const { service, removeInactiveCourses } = buildLogin([1, 3]);
+    it('oculta na estação as turmas fora da lista de ativas e informa o total ocultado', async () => {
+      const { service, syncCourseVisibility } = buildLogin([1, 3]);
 
       const summary = await service.syncActiveCourses();
 
-      expect(removeInactiveCourses).toHaveBeenCalledWith([1, 3]);
-      expect(summary).toMatchObject({ total: 2, removedCourses: 2, removedStudents: 40, error: null });
+      expect(syncCourseVisibility).toHaveBeenCalledWith([1, 3]);
+      expect(summary).toMatchObject({ total: 2, hiddenCourses: 2, hiddenStudents: 40, error: null });
     });
 
-    it('turma ativa que falhou no download continua na lista de ativas (não é apagada)', async () => {
-      const { service, course, removeInactiveCourses } = buildLogin([1, 3]);
+    it('turma ativa que falhou no download continua na lista de ativas (segue visível)', async () => {
+      const { service, course, syncCourseVisibility } = buildLogin([1, 3]);
       course.findUnique.mockResolvedValue(null); // download das duas falha: turma "não encontrada"
 
       const summary = await service.syncActiveCourses();
 
       expect(summary).toMatchObject({ synced: 0, failed: 2 });
-      expect(removeInactiveCourses).toHaveBeenCalledWith([1, 3]);
+      expect(syncCourseVisibility).toHaveBeenCalledWith([1, 3]);
     });
 
-    it('Pai inacessível: não apaga nada', async () => {
-      const { service, course, removeInactiveCourses } = buildLogin([1]);
+    it('Pai inacessível: não oculta nada', async () => {
+      const { service, course, syncCourseVisibility } = buildLogin([1]);
       course.findMany.mockRejectedValue(new Error('timeout'));
 
       const summary = await service.syncActiveCourses();
 
       expect(summary.error).not.toBeNull();
-      expect(removeInactiveCourses).not.toHaveBeenCalled();
+      expect(syncCourseVisibility).not.toHaveBeenCalled();
     });
 
-    it('falha na limpeza não derruba o sync', async () => {
-      const { service, removeInactiveCourses } = buildLogin([1]);
-      removeInactiveCourses.mockRejectedValue(new Error('disco cheio'));
+    it('falha ao ocultar não derruba o sync', async () => {
+      const { service, syncCourseVisibility } = buildLogin([1]);
+      syncCourseVisibility.mockRejectedValue(new Error('disco cheio'));
 
       const summary = await service.syncActiveCourses();
 
-      expect(summary).toMatchObject({ error: null, removedCourses: 0, removedStudents: 0 });
+      expect(summary).toMatchObject({ error: null, hiddenCourses: 0, hiddenStudents: 0 });
     });
   });
 

@@ -57,6 +57,18 @@ export class CheckinService {
           'Este aluno pertence a uma turma fora do seu perfil de acesso. Se ele for do seu perfil, use "Atualizar turmas" e tente de novo.',
       };
     }
+    if (student.courseActive === false) {
+      this.logger.warn(
+        `Check-in recusado — aluno=${student.id} está na turma "${student.courseName}", que não está mais ativa no Checkin Pai.`,
+      );
+      return {
+        success: false,
+        message: `A turma "${student.courseName}" não está mais ativa no Checkin Pai. Se ela foi reativada, use "Sincronizar agora" na tela de login.`,
+        studentId: student.id,
+        studentName: student.name,
+        courseName: student.courseName,
+      };
+    }
     if (dto.courseId !== undefined && student.courseId !== dto.courseId) {
       this.logger.warn(
         `Check-in recusado — aluno=${student.id} pertence à turma ${student.courseId}, mas a turma selecionada foi ${dto.courseId}.`,

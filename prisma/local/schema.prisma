@@ -42,6 +42,12 @@ model Student {
   /// a turma ainda não foi baixada desde que o campo existe — a etiqueta sai
   /// sem a linha da cidade.
   courseCity         String?   @map("course_city")
+  /// A turma está ativa no Checkin Pai (`Course.status`). Turma encerrada fica
+  /// OCULTA (não aparece no seletor, na busca nem aceita check-in), mas os
+  /// alunos e as presenças continuam aqui — se a turma for reativada, tudo
+  /// volta como estava. Atualizada no download da turma e no "Sincronizar
+  /// agora" do login (ver StudentsService#syncCourseVisibility).
+  courseActive       Boolean   @default(true) @map("course_active")
   name          String
   email         String?
   document      String?

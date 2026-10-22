@@ -80,6 +80,16 @@ describe('CheckinService', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('recusa aluno de turma oculta (inativa no Checkin Pai) sem credenciar nem imprimir', async () => {
+    studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseActive: false });
+
+    const result = await service.performCheckin({ studentToken: 'token-123' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('não está mais ativa');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   describe('escopo de turmas do operador (espelha a CoursePolicy do Pai)', () => {
     it('recusa aluno de turma de formação para operador restrito a eventos', async () => {
       studentsService.findByToken.mockResolvedValue({ ...mockStudent, courseEventType: 'formation' });

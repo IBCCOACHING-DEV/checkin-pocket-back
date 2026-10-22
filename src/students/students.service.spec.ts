@@ -11,17 +11,20 @@ function replica(id: number, courseId = 939): StudentReplicaDto {
   return dto;
 }
 
-describe('StudentsService#removeInactiveCourses', () => {
-  function build(stale: Array<{ courseId: number; courseName: string }>, removedCount: number) {
+describe('StudentsService#syncCourseVisibility', () => {
+  function build(stale: Array<{ courseId: number; courseName: string }>, hiddenCount: number) {
     const student = {
       findMany: jest.fn(async () => stale),
-      deleteMany: jest.fn(async () => ({ count: removedCount })),
+      updateMany: jest.fn(async (args: { data: { courseActive: boolean } }) => ({
+        count: args.data.courseActive ? 0 : hiddenCount,
+      })),
+      deleteMany: jest.fn(),
     };
-    const service = new StudentsService({ student } as never);
-    return { service, student };
+    const prisma = { $transaction: jest.fn(async (fn: (c: { student: typeof student }) => unknown) => fn({ student })) };
+    return { service: new StudentsService(prisma as never), student };
   }
 
-  it('apaga os alunos de turmas fora da lista de ativas, poupando os provisórios (id < 0)', async () => {
+  it('oculta (sem apagar) as turmas fora da lista de ativas e reativa as que voltaram', async () => {
     const { service, student } = build(
       [
         { courseId: 7, courseName: 'Antiga A' },
@@ -30,21 +33,27 @@ describe('StudentsService#removeInactiveCourses', () => {
       120,
     );
 
-    const result = await service.removeInactiveCourses([1, 2]);
+    const result = await service.syncCourseVisibility([1, 2]);
 
-    expect(result).toEqual({ courses: 2, students: 120 });
-    const where = { id: { gte: 0 }, courseId: { notIn: [1, 2] } };
-    expect(student.findMany).toHaveBeenCalledWith(expect.objectContaining({ where }));
-    expect(student.deleteMany).toHaveBeenCalledWith({ where });
+    expect(result).toEqual({ hiddenCourses: 2, hiddenStudents: 120 });
+    expect(student.updateMany).toHaveBeenCalledWith({
+      where: { courseId: { in: [1, 2] }, courseActive: false },
+      data: { courseActive: true },
+    });
+    expect(student.updateMany).toHaveBeenCalledWith({
+      where: { courseId: { notIn: [1, 2] }, courseActive: true },
+      data: { courseActive: false },
+    });
+    expect(student.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('sem turma inativa na estação não apaga nada', async () => {
+  it('sem turma inativa visível na estação não oculta nada', async () => {
     const { service, student } = build([], 0);
 
-    const result = await service.removeInactiveCourses([1, 2]);
+    const result = await service.syncCourseVisibility([1, 2]);
 
-    expect(result).toEqual({ courses: 0, students: 0 });
-    expect(student.deleteMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ hiddenCourses: 0, hiddenStudents: 0 });
+    expect(student.updateMany).toHaveBeenCalledTimes(1); // só a reativação
   });
 });
 
@@ -338,9 +347,34 @@ describe('StudentsService — cadastro manual de aluno', () => {
           upsert: jest.fn(),
         },
       };
-      const prisma = { $transaction: jest.fn(async (fn: (c: typeof tx) => unknown) => fn(tx)) };
-      return { service: new StudentsService(prisma as never), tx };
+      const prisma = {
+        $transaction: jest.fn(async (fn: (c: typeof tx) => unknown) => fn(tx)),
+        // Turma que a estação já conhece (herança de visibilidade); null = turma desconhecida.
+        student: { findFirst: jest.fn(async (): Promise<{ courseActive: boolean } | null> => null) },
+      };
+      return { service: new StudentsService(prisma as never), tx, prisma };
     }
+
+    it('aluno criado por evento herda a visibilidade da turma que a estação já conhece (oculta continua oculta)', async () => {
+      const { service, tx, prisma } = build(null);
+      prisma.student.findFirst.mockResolvedValue({ courseActive: false });
+
+      await service.applyRemoteStudentCreated(payload);
+
+      expect(tx.student.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ courseActive: false }) }),
+      );
+    });
+
+    it('turma desconhecida na estação: o aluno criado por evento entra como ativo', async () => {
+      const { service, tx } = build(null);
+
+      await service.applyRemoteStudentCreated(payload);
+
+      expect(tx.student.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ courseActive: true }) }),
+      );
+    });
 
     it('estação de origem: troca o id provisório pelo definitivo, preservando o registro', async () => {
       const { service, tx } = build({ id: -2, token: 'tok' });
@@ -404,8 +438,19 @@ describe('StudentsService — escopo de turmas do operador', () => {
     await service.listSyncedCourses({ eventType: 'formation' });
 
     expect(prisma.student.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { courseEventType: 'formation' } }),
+      expect.objectContaining({ where: { courseEventType: 'formation', courseActive: true } }),
     );
+  });
+
+  it('search e listSyncedCourses não enxergam turmas ocultas (inativas no Pai)', async () => {
+    const { service, prisma } = build();
+
+    await service.search('maria');
+    await service.listSyncedCourses();
+
+    for (const [args] of prisma.student.findMany.mock.calls as unknown as Array<[{ where: object }]>) {
+      expect(args.where).toMatchObject({ courseActive: true });
+    }
   });
 });
 

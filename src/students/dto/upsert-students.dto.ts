@@ -89,6 +89,14 @@ export class StudentReplicaDto {
   @IsOptional()
   @IsBoolean()
   labelPrinted?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description: 'A turma está ativa no Checkin Pai. Ausente = ativa. Turma inativa fica oculta na estação (os dados são mantidos).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  courseActive?: boolean;
 }
 
 /**

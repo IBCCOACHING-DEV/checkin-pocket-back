@@ -100,6 +100,7 @@ export class PaiSyncService {
       replica.courseEventDateEnd = course.eventDateEnd ?? undefined;
       replica.courseEventType = course.eventType ?? undefined;
       replica.courseCity = courseCity ?? undefined;
+      replica.courseActive = course.status !== false;
       replica.labelPrinted = student.tagPrinter === true;
       replicas.push(replica);
     }
@@ -138,7 +139,7 @@ export class PaiSyncService {
       activeCourses = await this.listActiveCourses();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { total: 0, synced: 0, failed: 0, removedCourses: 0, removedStudents: 0, error: message };
+      return { total: 0, synced: 0, failed: 0, hiddenCourses: 0, hiddenStudents: 0, error: message };
     }
 
     let synced = 0;
@@ -160,25 +161,25 @@ export class PaiSyncService {
 
     // A lista de ativas veio do Pai agora há pouco (uma falha de consulta cai
     // no catch acima), então tudo que a estação tem fora dela é turma
-    // encerrada. Turma ativa que falhou no download NÃO é removida — continua
-    // na lista e mantém os dados que já tinha.
-    const { courses: removedCourses, students: removedStudents } = await this.removeInactiveCourses(
+    // encerrada: fica OCULTA, sem apagar nada. Turma ativa que falhou no
+    // download continua visível, com os dados que já tinha.
+    const { hiddenCourses, hiddenStudents } = await this.syncCourseVisibility(
       activeCourses.map((course) => course.id),
     );
 
-    return { total: activeCourses.length, synced, failed, removedCourses, removedStudents, error: null };
+    return { total: activeCourses.length, synced, failed, hiddenCourses, hiddenStudents, error: null };
   }
 
-  /** A limpeza nunca derruba o login/sync: se falhar, as turmas antigas só continuam na estação. */
-  private async removeInactiveCourses(
+  /** Nunca derruba o login/sync: se falhar, as turmas antigas só continuam visíveis na estação. */
+  private async syncCourseVisibility(
     activeCourseIds: number[],
-  ): Promise<{ courses: number; students: number }> {
+  ): Promise<{ hiddenCourses: number; hiddenStudents: number }> {
     try {
-      return await this.studentsService.removeInactiveCourses(activeCourseIds);
+      return await this.studentsService.syncCourseVisibility(activeCourseIds);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Falha ao remover turmas inativas da réplica local: ${message}`);
-      return { courses: 0, students: 0 };
+      this.logger.error(`Falha ao ocultar turmas inativas na réplica local: ${message}`);
+      return { hiddenCourses: 0, hiddenStudents: 0 };
     }
   }
 

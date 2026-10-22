@@ -147,6 +147,7 @@ export class StudentsService {
     const students = await this.prisma.student.findMany({
       where: {
         ...studentScopeWhere(scope),
+        courseActive: true,
         OR: [
           { name: { contains: term } },
           { email: { contains: term } },
@@ -182,8 +183,10 @@ export class StudentsService {
    * `GET /pai/courses` (que consulta o banco do Pai ao vivo).
    */
   async listSyncedCourses(scope?: CourseScope): Promise<SyncedCourseSummary[]> {
+    // Só turmas ativas: também é o que o "Atualizar turmas" re-sincroniza —
+    // re-baixar uma turma oculta a reativaria sem o Pai ter reativado.
     const students = await this.prisma.student.findMany({
-      where: studentScopeWhere(scope),
+      where: { ...studentScopeWhere(scope), courseActive: true },
       select: { courseId: true, courseName: true, syncedAt: true },
     });
 
@@ -308,40 +311,60 @@ export class StudentsService {
   }
 
   /**
-   * Remove da réplica local TODAS as turmas que não estão na lista de turmas
-   * ativas do Checkin Pai (turma encerrada/desativada no Pai some da estação).
+   * Alinha a visibilidade das turmas desta estação com a lista de turmas
+   * ATIVAS do Checkin Pai: as que estão na lista ficam visíveis; as demais
+   * ficam OCULTAS (`courseActive = false`) — não aparecem no seletor nem na
+   * busca e não aceitam check-in.
    *
-   * Poupa os alunos provisórios (`id < 0`), pelo mesmo motivo do
-   * `replaceCourse`: o Pai ainda não os conhece, então não "sumiram" de lá.
-   * `print_jobs.student_id` é ON DELETE SET NULL e o outbox guarda o payload
-   * completo, então histórico de impressão e check-ins ainda não publicados
-   * não são afetados.
-   *
-   * Só chamar com a lista de ativas obtida com SUCESSO no Pai — uma lista
-   * errada aqui apaga turmas válidas.
+   * Nada é apagado: alunos, presenças e histórico continuam no banco. Se a
+   * turma for reativada no Pai, volta exatamente como estava (apagar perdia a
+   * presença, que o download não traz de volta). Só chamar com a lista de
+   * ativas obtida com SUCESSO no Pai.
    */
-  async removeInactiveCourses(
+  async syncCourseVisibility(
     activeCourseIds: number[],
-  ): Promise<{ courses: number; students: number }> {
-    const where = { id: { gte: 0 }, courseId: { notIn: activeCourseIds } };
+  ): Promise<{ hiddenCourses: number; hiddenStudents: number }> {
+    return this.prisma.$transaction(async (tx: LocalTransactionClient) => {
+      // Reativada no Pai (inclusive turma ativa cujo download falhou agora).
+      await tx.student.updateMany({
+        where: { courseId: { in: activeCourseIds }, courseActive: false },
+        data: { courseActive: true },
+      });
 
-    const stale = await this.prisma.student.findMany({
-      where,
-      distinct: ['courseId'],
-      select: { courseId: true, courseName: true },
+      const stale = await tx.student.findMany({
+        where: { courseId: { notIn: activeCourseIds }, courseActive: true },
+        distinct: ['courseId'],
+        select: { courseId: true, courseName: true },
+      });
+      if (stale.length === 0) {
+        return { hiddenCourses: 0, hiddenStudents: 0 };
+      }
+
+      const hidden = await tx.student.updateMany({
+        where: { courseId: { notIn: activeCourseIds }, courseActive: true },
+        data: { courseActive: false },
+      });
+
+      this.logger.log(
+        `Turmas inativas ocultadas na estação: ${stale.length} turma(s), ${hidden.count} aluno(s) (${stale
+          .map((course) => `${course.courseName} #${course.courseId}`)
+          .join('; ')}). Os dados foram mantidos.`,
+      );
+      return { hiddenCourses: stale.length, hiddenStudents: hidden.count };
     });
-    if (stale.length === 0) {
-      return { courses: 0, students: 0 };
-    }
+  }
 
-    const removed = await this.prisma.student.deleteMany({ where });
-
-    this.logger.log(
-      `Turmas inativas removidas da réplica local: ${stale.length} turma(s), ${removed.count} aluno(s) (${stale
-        .map((course) => `${course.courseName} #${course.courseId}`)
-        .join('; ')}).`,
-    );
-    return { courses: stale.length, students: removed.count };
+  /**
+   * Aluno criado a partir de um evento (check-in/transferência/cadastro de
+   * outra estação) herda a visibilidade da turma que esta estação já conhece;
+   * turma desconhecida entra como ativa (o Pai só avisa de turmas em uso).
+   */
+  private async isCourseActiveHere(courseId: number): Promise<boolean> {
+    const sample = await this.prisma.student.findFirst({
+      where: { courseId },
+      select: { courseActive: true },
+    });
+    return sample?.courseActive ?? true;
   }
 
   private upsertOne(client: LocalTransactionClient | LocalPrismaService, item: StudentReplicaDto) {
@@ -355,6 +378,7 @@ export class StudentsService {
         courseEventDateEnd: item.courseEventDateEnd ?? null,
         courseEventType: item.courseEventType ?? null,
         courseCity: item.courseCity ?? null,
+        courseActive: item.courseActive ?? true,
         name: item.name,
         token: item.token,
         email: item.email ?? null,
@@ -365,6 +389,7 @@ export class StudentsService {
       update: {
         courseId: item.courseId,
         courseName: item.courseName,
+        courseActive: item.courseActive ?? true,
         courseEventDate: item.courseEventDate ?? null,
         courseEventDateEnd: item.courseEventDateEnd ?? null,
         courseEventType: item.courseEventType ?? null,
@@ -438,6 +463,7 @@ export class StudentsService {
         id: payload.id,
         courseId: payload.courseId,
         courseName: payload.courseName,
+        courseActive: await this.isCourseActiveHere(payload.courseId),
         name: payload.name,
         token: payload.token,
         checkedIn: true,
@@ -502,6 +528,7 @@ export class StudentsService {
    * titular já passou pela credenciamento.
    */
   async applyRemoteTransfer(studentId: number, payload: RemoteTransferPayload): Promise<void> {
+    const courseActive = await this.isCourseActiveHere(payload.courseId);
     await this.prisma.student.upsert({
       where: { id: studentId },
       update: {
@@ -514,6 +541,7 @@ export class StudentsService {
         id: studentId,
         courseId: payload.courseId,
         courseName: payload.courseName ?? `Turma #${payload.courseId}`,
+        courseActive,
         name: payload.name,
         email: payload.email,
         document: payload.document,
@@ -562,8 +590,9 @@ export class StudentsService {
     courseEventType: string | null;
   } | null> {
     // `desc` põe primeiro um aluno COM tipo de turma (no SQLite, nulos vêm por último em desc).
+    // Turma oculta (inativa no Pai) não aceita cadastro manual, como se não estivesse baixada.
     const sample = await this.prisma.student.findFirst({
-      where: { courseId },
+      where: { courseId, courseActive: true },
       orderBy: { courseEventType: 'desc' },
       select: { courseName: true, courseEventDate: true, courseEventDateEnd: true, courseEventType: true },
     });
@@ -595,6 +624,9 @@ export class StudentsService {
    * reentrega da mesma mensagem não muda nada.
    */
   async applyRemoteStudentCreated(payload: RemoteStudentCreatedPayload): Promise<void> {
+    // Fora da transação: não consulta o banco por fora de uma tx aberta.
+    const courseActive = await this.isCourseActiveHere(payload.courseId);
+
     await this.prisma.$transaction(async (tx: LocalTransactionClient) => {
       await this.promoteProvisionalByToken(tx, payload.token, payload.id);
 
@@ -631,6 +663,7 @@ export class StudentsService {
           ...data,
           courseName: payload.courseName ?? `Turma #${payload.courseId}`,
           courseEventType: payload.courseEventType ?? null,
+          courseActive,
         },
       });
     });

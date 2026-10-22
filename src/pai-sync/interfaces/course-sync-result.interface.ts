@@ -6,10 +6,10 @@ export interface ActiveCoursesSyncSummary {
   synced: number;
   /** Quantas falharam (as demais seguem normalmente — falha isolada por turma). */
   failed: number;
-  /** Quantas turmas que não estão mais ativas no Pai foram removidas desta estação. */
-  removedCourses: number;
-  /** Quantos alunos dessas turmas inativas foram removidos da réplica local. */
-  removedStudents: number;
+  /** Quantas turmas que não estão mais ativas no Pai foram ocultadas nesta estação (dados mantidos). */
+  hiddenCourses: number;
+  /** Quantos alunos dessas turmas passaram a ficar ocultos. */
+  hiddenStudents: number;
   /** Preenchido quando nem foi possível consultar o Pai (rede indisponível). */
   error: string | null;
 }
