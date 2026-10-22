@@ -18,16 +18,16 @@ export class TicketTransferController {
 
   @Get('search')
   @ApiOperation({
-    summary: 'Busca o(s) ingresso(s) de um CPF no Checkin Pai',
+    summary: 'Busca o(s) ingresso(s) por CPF, nome ou e-mail no Checkin Pai',
     description:
-      'Consulta direta no banco do Pai (MySQL, somente leitura) — não depende da réplica local, funciona mesmo para turmas nunca sincronizadas nesta estação.',
+      'Consulta direta no banco do Pai (MySQL, somente leitura) — não depende da réplica local, funciona mesmo para turmas nunca sincronizadas nesta estação. Cada resultado informa se o titular atual já foi credenciado.',
   })
-  @ApiResponse({ status: HttpStatus.OK, description: 'Ingressos encontrados para o CPF informado.' })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Ingressos encontrados para o termo informado.' })
   search(
     @Query() query: SearchTransferQueryDto,
     @OperatorScope() scope: CourseScope,
   ): Promise<TransferSearchResult[]> {
-    return this.ticketTransferService.searchByDocument(query.document, scope);
+    return this.ticketTransferService.search(query.q, scope);
   }
 
   @Post('request')

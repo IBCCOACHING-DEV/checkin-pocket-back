@@ -138,7 +138,7 @@ export class PaiSyncService {
       activeCourses = await this.listActiveCourses();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { total: 0, synced: 0, failed: 0, error: message };
+      return { total: 0, synced: 0, failed: 0, removedCourses: 0, removedStudents: 0, error: message };
     }
 
     let synced = 0;
@@ -157,7 +157,29 @@ export class PaiSyncService {
     this.logger.log(
       `Turmas ativas baixadas: ${synced}/${activeCourses.length} (${failed} falha(s)).`,
     );
-    return { total: activeCourses.length, synced, failed, error: null };
+
+    // A lista de ativas veio do Pai agora há pouco (uma falha de consulta cai
+    // no catch acima), então tudo que a estação tem fora dela é turma
+    // encerrada. Turma ativa que falhou no download NÃO é removida — continua
+    // na lista e mantém os dados que já tinha.
+    const { courses: removedCourses, students: removedStudents } = await this.removeInactiveCourses(
+      activeCourses.map((course) => course.id),
+    );
+
+    return { total: activeCourses.length, synced, failed, removedCourses, removedStudents, error: null };
+  }
+
+  /** A limpeza nunca derruba o login/sync: se falhar, as turmas antigas só continuam na estação. */
+  private async removeInactiveCourses(
+    activeCourseIds: number[],
+  ): Promise<{ courses: number; students: number }> {
+    try {
+      return await this.studentsService.removeInactiveCourses(activeCourseIds);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Falha ao remover turmas inativas da réplica local: ${message}`);
+      return { courses: 0, students: 0 };
+    }
   }
 
   /**

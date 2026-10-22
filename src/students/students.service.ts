@@ -113,6 +113,25 @@ export class StudentsService {
   }
 
   /**
+   * Estado de presença na réplica local dos alunos informados (por id). Alunos
+   * que esta estação nunca sincronizou simplesmente não aparecem no mapa.
+   */
+  async findCheckinStates(
+    ids: number[],
+  ): Promise<Map<number, { checkedIn: boolean; checkedInAt: Date | null }>> {
+    if (ids.length === 0) {
+      return new Map();
+    }
+    const rows = await this.prisma.student.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, checkedIn: true, checkedInAt: true },
+    });
+    return new Map(
+      rows.map((row) => [row.id, { checkedIn: row.checkedIn, checkedInAt: row.checkedInAt }]),
+    );
+  }
+
+  /**
    * Busca alunos já sincronizados nesta estação por nome, e-mail ou
    * documento — alternativa ao QR Code para quando o operador não tem o
    * voucher em mãos. Retorna a turma e o status de check-in de cada
@@ -286,6 +305,43 @@ export class StudentsService {
       `Réplica local da turma ${courseId} sincronizada: ${result.synced} registro(s), ${result.removed} removido(s).`,
     );
     return result;
+  }
+
+  /**
+   * Remove da réplica local TODAS as turmas que não estão na lista de turmas
+   * ativas do Checkin Pai (turma encerrada/desativada no Pai some da estação).
+   *
+   * Poupa os alunos provisórios (`id < 0`), pelo mesmo motivo do
+   * `replaceCourse`: o Pai ainda não os conhece, então não "sumiram" de lá.
+   * `print_jobs.student_id` é ON DELETE SET NULL e o outbox guarda o payload
+   * completo, então histórico de impressão e check-ins ainda não publicados
+   * não são afetados.
+   *
+   * Só chamar com a lista de ativas obtida com SUCESSO no Pai — uma lista
+   * errada aqui apaga turmas válidas.
+   */
+  async removeInactiveCourses(
+    activeCourseIds: number[],
+  ): Promise<{ courses: number; students: number }> {
+    const where = { id: { gte: 0 }, courseId: { notIn: activeCourseIds } };
+
+    const stale = await this.prisma.student.findMany({
+      where,
+      distinct: ['courseId'],
+      select: { courseId: true, courseName: true },
+    });
+    if (stale.length === 0) {
+      return { courses: 0, students: 0 };
+    }
+
+    const removed = await this.prisma.student.deleteMany({ where });
+
+    this.logger.log(
+      `Turmas inativas removidas da réplica local: ${stale.length} turma(s), ${removed.count} aluno(s) (${stale
+        .map((course) => `${course.courseName} #${course.courseId}`)
+        .join('; ')}).`,
+    );
+    return { courses: stale.length, students: removed.count };
   }
 
   private upsertOne(client: LocalTransactionClient | LocalPrismaService, item: StudentReplicaDto) {

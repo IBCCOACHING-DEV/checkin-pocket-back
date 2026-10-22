@@ -11,6 +11,43 @@ function replica(id: number, courseId = 939): StudentReplicaDto {
   return dto;
 }
 
+describe('StudentsService#removeInactiveCourses', () => {
+  function build(stale: Array<{ courseId: number; courseName: string }>, removedCount: number) {
+    const student = {
+      findMany: jest.fn(async () => stale),
+      deleteMany: jest.fn(async () => ({ count: removedCount })),
+    };
+    const service = new StudentsService({ student } as never);
+    return { service, student };
+  }
+
+  it('apaga os alunos de turmas fora da lista de ativas, poupando os provisórios (id < 0)', async () => {
+    const { service, student } = build(
+      [
+        { courseId: 7, courseName: 'Antiga A' },
+        { courseId: 8, courseName: 'Antiga B' },
+      ],
+      120,
+    );
+
+    const result = await service.removeInactiveCourses([1, 2]);
+
+    expect(result).toEqual({ courses: 2, students: 120 });
+    const where = { id: { gte: 0 }, courseId: { notIn: [1, 2] } };
+    expect(student.findMany).toHaveBeenCalledWith(expect.objectContaining({ where }));
+    expect(student.deleteMany).toHaveBeenCalledWith({ where });
+  });
+
+  it('sem turma inativa na estação não apaga nada', async () => {
+    const { service, student } = build([], 0);
+
+    const result = await service.removeInactiveCourses([1, 2]);
+
+    expect(result).toEqual({ courses: 0, students: 0 });
+    expect(student.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('StudentsService#replaceCourse', () => {
   function build(removedCount: number, provisionals: Array<{ token: string }> = []) {
     const calls: string[] = [];

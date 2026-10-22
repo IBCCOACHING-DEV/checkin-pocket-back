@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import { LABEL_HEIGHT_DOTS, LABEL_WIDTH_DOTS, renderLabelCanvas } from './label-layout';
+import { LABEL_HEIGHT_DOTS, LABEL_SAFE_AREA, LABEL_WIDTH_DOTS, renderLabelCanvas } from './label-layout';
 import { renderLabelPng } from './label-image';
 
 function pixels(content: Parameters<typeof renderLabelCanvas>[0]) {
@@ -46,8 +46,8 @@ describe('etiqueta 29x90mm (label-layout)', () => {
     expect(decoded?.data).toBe(token);
   });
 
-  it('o QR fica no canto superior direito e sem token o canto fica em branco', () => {
-    const corner = [LABEL_WIDTH_DOTS - 240, 0, LABEL_WIDTH_DOTS, 250] as const;
+  it('o QR fica no canto superior direito da área segura e sem token o canto fica em branco', () => {
+    const corner = [LABEL_SAFE_AREA.right - 210, 0, LABEL_SAFE_AREA.right, 235] as const;
 
     const withQr = darkPixelsIn(pixels({ ...BASE, token: 'a1b2c3d4-e5f6-4789-abcd-0123456789ab' }), ...corner);
     const withoutQr = darkPixelsIn(pixels(BASE), ...corner);
@@ -65,23 +65,52 @@ describe('etiqueta 29x90mm (label-layout)', () => {
     expect(withCity).toBeGreaterThan(withoutCity);
   });
 
-  it('textos longos encolhem/cortam e nunca invadem o QR nem passam das margens', () => {
-    const data = pixels({
-      name: 'Maria Aparecida da Silva Nascimento Oliveira Albuquerque',
-      nickname: 'MARIA APARECIDA DA SILVA NASCIMENTO OLIVEIRA',
-      city: 'São José do Rio Preto Grande do Sul - SP',
-      course: 'MASTERTRAINER12 - INTENSIVO DE FORMAÇÃO AVANÇADA EM COACHING COMPORTAMENTAL',
-      token: 'a1b2c3d4-e5f6-4789-abcd-0123456789ab',
+  describe('área segura (a impressora corta o que passa dela — QR cortado numa etiqueta real)', () => {
+    const TOKEN = 'a1b2c3d4-e5f6-4789-abcd-0123456789ab';
+    const samples: Array<[string, Parameters<typeof renderLabelCanvas>[0]]> = [
+      ['exemplo da foto', { ...BASE, name: 'Fabio', nickname: 'Fabio', course: 'DESPERTESEUPODERPREMIUM-TESTE - IMERSAO', token: TOKEN }],
+      [
+        'textos longos',
+        {
+          name: 'Maria Aparecida da Silva Nascimento Oliveira Albuquerque',
+          nickname: 'MARIA APARECIDA DA SILVA NASCIMENTO OLIVEIRA',
+          city: 'SÃO JOSÉ DO RIO PRETO GRANDE DO SUL/SP',
+          course: 'MASTERTRAINER12 - INTENSIVO DE FORMAÇÃO AVANÇADA EM COACHING COMPORTAMENTAL',
+          token: TOKEN,
+        },
+      ],
+      ['apelido diferente do nome (3 linhas)', { ...BASE, name: 'Ronaldo Nazário', nickname: 'Ronaldo', token: TOKEN }],
+      ['sem token e sem cidade', { name: 'Ana', nickname: 'Ana', course: 'TURMA' }],
+    ];
+
+    function darkPixelsOutsideSafeArea(data: Uint8ClampedArray): number {
+      let outside = 0;
+      for (let y = 0; y < LABEL_HEIGHT_DOTS; y++) {
+        for (let x = 0; x < LABEL_WIDTH_DOTS; x++) {
+          if (data[(y * LABEL_WIDTH_DOTS + x) * 4] >= 128) continue;
+          // ~2-6 dots de tolerância para o contorno dos glifos (cedilha, til).
+          if (x > LABEL_SAFE_AREA.right || x < LABEL_SAFE_AREA.left - 6 || y > LABEL_SAFE_AREA.bottom + 2 || y < LABEL_SAFE_AREA.top - 2) {
+            outside++;
+          }
+        }
+      }
+      return outside;
+    }
+
+    it.each(samples)('nada é desenhado fora da área segura: %s', (_label, content) => {
+      expect(darkPixelsOutsideSafeArea(pixels(content))).toBe(0);
     });
 
-    // Faixa de respiro (quiet zone) logo à esquerda do QR — que ocupa 232
-    // dots encostado na margem direita de 14 — permanece em branco; e nada é
-    // desenhado nas margens laterais.
-    const qrLeft = LABEL_WIDTH_DOTS - 14 - 232;
-    expect(darkPixelsIn(data, qrLeft - 28, 0, qrLeft, 244)).toBe(0);
-    expect(darkPixelsIn(data, 0, 0, 8, LABEL_HEIGHT_DOTS)).toBe(0);
-    expect(darkPixelsIn(data, LABEL_WIDTH_DOTS - 8, 0, LABEL_WIDTH_DOTS, LABEL_HEIGHT_DOTS)).toBe(0);
-    expect(jsQR(data, LABEL_WIDTH_DOTS, LABEL_HEIGHT_DOTS)?.data).toBe('a1b2c3d4-e5f6-4789-abcd-0123456789ab');
+    it('o limite direito deixa folga sobre o corte medido na etiqueta real (~x=924)', () => {
+      expect(LABEL_SAFE_AREA.right).toBeLessThanOrEqual(880);
+    });
+
+    it('QR e texto não se sobrepõem: faixa de respiro à esquerda do QR em branco, mesmo com textos longos', () => {
+      const data = pixels(samples[1][1]);
+      const qrLeft = LABEL_SAFE_AREA.right - 203; // 29 módulos x 7 dots
+      expect(darkPixelsIn(data, qrLeft - 28, LABEL_SAFE_AREA.top, qrLeft, LABEL_SAFE_AREA.top + 200)).toBe(0);
+      expect(jsQR(data, LABEL_WIDTH_DOTS, LABEL_HEIGHT_DOTS)?.data).toBe(TOKEN);
+    });
   });
 
   it('renderiza em poucos milissegundos (não pesa no tempo de impressão)', () => {

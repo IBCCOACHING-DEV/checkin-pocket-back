@@ -17,6 +17,16 @@ import { TransferRequestedMessage } from '../messaging/types';
 import { RequestTransferDto } from './dto/request-transfer.dto';
 import { TransferSearchResult } from './interfaces/transfer-search-result.interface';
 import { TransferStatus } from './interfaces/transfer-status.interface';
+import { buildOwnerSearchFilter } from './transfer-search-filter';
+
+const TRANSFER_SEARCH_LIMIT = 30;
+
+function latestDate(a: Date | null, b: Date | null): Date | null {
+  if (a && b) {
+    return a.getTime() >= b.getTime() ? a : b;
+  }
+  return a ?? b;
+}
 
 /**
  * Transferência de ingresso — SÍNCRONA no que depende desta estação,
@@ -55,39 +65,53 @@ export class TicketTransferService {
   }
 
   /**
-   * Busca o(s) ingresso(s) associados a um CPF diretamente no banco do
-   * Pai (MySQL, somente leitura) — não depende da réplica local, então
-   * funciona mesmo para turmas que esta estação nunca sincronizou.
+   * Busca o(s) ingresso(s) por CPF (inteiro ou parcial), nome ou e-mail do
+   * titular atual diretamente no banco do Pai (MySQL, somente leitura) — não
+   * depende da réplica local, então funciona mesmo para turmas que esta
+   * estação nunca sincronizou. Ver `buildOwnerSearchFilter` para como o
+   * termo é interpretado.
    *
    * Só considera ingressos de turmas ATIVAS (`Course.status = true`, mesmo
    * critério de `PaiSyncService#listActiveCourses`): transferir ingresso de
    * uma turma encerrada não faz sentido no credenciamento do evento. Para
    * operador restrito (staff/user com tipo event/formation), também só do
    * mesmo `event_type`, como na CoursePolicy::Scope do Pai.
+   *
+   * Cada resultado diz se o titular atual JÁ FOI CREDENCIADO: vale a presença
+   * gravada no Pai (`checkin_date`) ou a registrada nesta estação (que pode
+   * ainda não ter chegado ao Pai pelo RabbitMQ).
    */
-  async searchByDocument(document: string, scope?: CourseScope): Promise<TransferSearchResult[]> {
-    const cleanedDocument = document.replace(/\D/g, '');
-
+  async search(query: string, scope?: CourseScope): Promise<TransferSearchResult[]> {
     const students = await this.queryPai(() =>
       this.remotePrisma.client.student.findMany({
         where: {
-          document: cleanedDocument,
+          OR: buildOwnerSearchFilter(query),
           course: { is: { status: true, ...(scope?.eventType ? { eventType: scope.eventType } : {}) } },
         },
         include: { course: true },
+        orderBy: { name: 'asc' },
+        take: TRANSFER_SEARCH_LIMIT,
       }),
     );
 
-    return students
-      .filter((student) => student.id !== undefined)
-      .map((student) => ({
+    const localStates = await this.studentsService.findCheckinStates(students.map((student) => student.id));
+
+    return students.map((student) => {
+      const local = localStates.get(student.id);
+      const paiCheckinAt = student.checkinDate ?? null;
+      const localCheckinAt = local?.checkedIn ? local.checkedInAt : null;
+
+      return {
         studentId: student.id,
         courseId: student.courseId ?? 0,
         courseName: student.course?.name ?? `Turma #${student.courseId ?? '?'}`,
         currentOwnerName: student.name,
         currentOwnerEmail: student.email,
         currentOwnerDocument: student.document,
-      }));
+        checkedIn: paiCheckinAt !== null || local?.checkedIn === true,
+        checkedInAt: latestDate(paiCheckinAt, localCheckinAt),
+      };
+    });
   }
 
   /**
