@@ -1,9 +1,10 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RabbitMqService } from '../messaging/rabbitmq.service';
 import {
   CHECKIN_EVENTS_EXCHANGE,
   CHECKIN_EVENTS_EXCHANGE_DLX,
+  STATION_QUEUE_EXPIRES_MS,
   STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY,
   STUDENT_CREATE_COMPLETED_ROUTING_KEY,
   studentSyncDeadLetterQueueName,
@@ -12,8 +13,6 @@ import {
 import { parseStudentCreateCompletedMessage } from '../messaging/types';
 import { StudentsService } from '../students/students.service';
 import { StudentRegistrationService } from './student-registration.service';
-
-const REGISTER_RETRY_INTERVAL_MS = 15000;
 
 /**
  * Consumer do RabbitMQ que escuta `student.create.completed` — publicado
@@ -37,11 +36,8 @@ const REGISTER_RETRY_INTERVAL_MS = 15000;
  * e o registro fica `failed` com o motivo, para a equipe resolver no Pai.
  */
 @Injectable()
-export class StudentCreateSyncConsumer implements OnModuleInit, OnModuleDestroy {
+export class StudentCreateSyncConsumer implements OnModuleInit {
   private readonly logger = new Logger(StudentCreateSyncConsumer.name);
-  private stopped = false;
-  private registered = false;
-  private pendingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly rabbitMq: RabbitMqService,
@@ -55,67 +51,28 @@ export class StudentCreateSyncConsumer implements OnModuleInit, OnModuleDestroy 
   }
 
   onModuleInit(): void {
-    // Fire-and-forget deliberado — ver CheckinSyncConsumer para a
-    // justificativa (boot do Nest não pode depender do broker estar de pé).
-    void this.registerLoop();
-  }
-
-  onModuleDestroy(): void {
-    this.stopped = true;
-    if (this.pendingTimeout) {
-      clearTimeout(this.pendingTimeout);
-      this.pendingTimeout = null;
-    }
-  }
-
-  private async registerLoop(): Promise<void> {
-    while (!this.stopped && !this.registered) {
-      const success = await this.tryRegister();
-
-      if (success || this.stopped) {
-        return;
-      }
-
-      await this.sleep(REGISTER_RETRY_INTERVAL_MS);
-    }
-  }
-
-  private async tryRegister(): Promise<boolean> {
+    // Montado e remontado a cada (re)conexão pelo RabbitMqService — ver CheckinSyncConsumer.
     const queue = studentSyncQueueName(this.agentKey);
-    const deadLetterQueue = studentSyncDeadLetterQueueName(this.agentKey);
-
-    try {
-      await this.rabbitMq.assertAndBindQueue(
-        deadLetterQueue,
-        CHECKIN_EVENTS_EXCHANGE_DLX,
-        STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY,
-      );
-
-      await this.rabbitMq.assertAndBindQueue(queue, CHECKIN_EVENTS_EXCHANGE, STUDENT_CREATE_COMPLETED_ROUTING_KEY, {
-        arguments: {
-          'x-dead-letter-exchange': CHECKIN_EVENTS_EXCHANGE_DLX,
-          'x-dead-letter-routing-key': STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY,
-        },
-      });
-
-      await this.rabbitMq.consume(queue, (content) => this.handleMessage(content));
-
-      this.registered = true;
-      this.logger.log(`Sincronização de cadastros de aluno ativa (fila "${queue}").`);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Não foi possível registrar o consumer de cadastros de aluno (broker indisponível?): ${message}. Nova tentativa em ${REGISTER_RETRY_INTERVAL_MS}ms.`,
-      );
-      return false;
-    }
+    this.rabbitMq.registerConsumer(queue, () => this.setup(queue));
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      this.pendingTimeout = setTimeout(resolve, ms);
+  private async setup(queue: string): Promise<void> {
+    await this.rabbitMq.assertAndBindQueue(
+      studentSyncDeadLetterQueueName(this.agentKey),
+      CHECKIN_EVENTS_EXCHANGE_DLX,
+      STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY,
+      { arguments: { 'x-expires': STATION_QUEUE_EXPIRES_MS } },
+    );
+
+    await this.rabbitMq.assertAndBindQueue(queue, CHECKIN_EVENTS_EXCHANGE, STUDENT_CREATE_COMPLETED_ROUTING_KEY, {
+      arguments: {
+        'x-dead-letter-exchange': CHECKIN_EVENTS_EXCHANGE_DLX,
+        'x-dead-letter-routing-key': STUDENT_CREATE_COMPLETED_DEAD_ROUTING_KEY,
+        'x-expires': STATION_QUEUE_EXPIRES_MS,
+      },
     });
+
+    await this.rabbitMq.consume(queue, (content) => this.handleMessage(content));
   }
 
   private async handleMessage(content: Buffer): Promise<void> {

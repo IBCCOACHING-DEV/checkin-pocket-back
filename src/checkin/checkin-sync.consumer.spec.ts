@@ -9,8 +9,13 @@ describe('CheckinSyncConsumer', () => {
 
   type Handler = (content: Buffer) => Promise<void>;
   let registeredHandler: Handler | null;
+  let setupDone: Promise<void>;
 
   const rabbitMq = {
+    // O serviço real roda o setup ao conectar e a cada reconexão; aqui, na hora.
+    registerConsumer: jest.fn((_name: string, setup: () => Promise<void>) => {
+      setupDone = setup();
+    }),
     assertAndBindQueue: jest.fn().mockResolvedValue(undefined),
     consume: jest.fn((_queue: string, handler: Handler) => {
       registeredHandler = handler;
@@ -57,20 +62,25 @@ describe('CheckinSyncConsumer', () => {
     }).compile();
 
     consumer = module.get<CheckinSyncConsumer>(CheckinSyncConsumer);
-    await consumer.onModuleInit();
+    consumer.onModuleInit();
+    await setupDone;
   });
 
-  it('declara a fila own agent e registra o consumidor', () => {
+  it('declara a fila own agent e registra o consumidor (remontável a cada reconexão)', () => {
+    expect(rabbitMq.registerConsumer).toHaveBeenCalledWith('checkin.sync.agent-a', expect.any(Function));
     expect(rabbitMq.assertAndBindQueue).toHaveBeenCalledWith(
       'checkin.sync.agent-a.dlq',
       'ibc.checkin.events.dlx',
       'checkin.performed.dead',
+      { arguments: { 'x-expires': 7 * 24 * 60 * 60 * 1000 } },
     );
     expect(rabbitMq.assertAndBindQueue).toHaveBeenCalledWith(
       'checkin.sync.agent-a',
       'ibc.checkin.events',
       'checkin.#',
-      expect.objectContaining({ arguments: expect.any(Object) }),
+      expect.objectContaining({
+        arguments: expect.objectContaining({ 'x-expires': 7 * 24 * 60 * 60 * 1000 }),
+      }),
     );
     expect(rabbitMq.consume).toHaveBeenCalledWith('checkin.sync.agent-a', expect.any(Function));
   });

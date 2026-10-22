@@ -1,9 +1,10 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RabbitMqService } from '../messaging/rabbitmq.service';
 import {
   CHECKIN_EVENTS_EXCHANGE,
   CHECKIN_EVENTS_EXCHANGE_DLX,
+  STATION_QUEUE_EXPIRES_MS,
   TRANSFER_COMPLETED_DEAD_ROUTING_KEY,
   TRANSFER_COMPLETED_ROUTING_KEY,
   transferSyncDeadLetterQueueName,
@@ -12,8 +13,6 @@ import {
 import { parseTransferCompletedMessage } from '../messaging/types';
 import { StudentsService } from '../students/students.service';
 import { TicketTransferService } from './ticket-transfer.service';
-
-const REGISTER_RETRY_INTERVAL_MS = 15000;
 
 /**
  * Consumer do RabbitMQ que escuta `transfer.completed` — publicado pelo
@@ -35,11 +34,8 @@ const REGISTER_RETRY_INTERVAL_MS = 15000;
  *     um no-op silencioso (ver TicketTransferService#applyResult).
  */
 @Injectable()
-export class TicketTransferSyncConsumer implements OnModuleInit, OnModuleDestroy {
+export class TicketTransferSyncConsumer implements OnModuleInit {
   private readonly logger = new Logger(TicketTransferSyncConsumer.name);
-  private stopped = false;
-  private registered = false;
-  private pendingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly rabbitMq: RabbitMqService,
@@ -53,67 +49,28 @@ export class TicketTransferSyncConsumer implements OnModuleInit, OnModuleDestroy
   }
 
   onModuleInit(): void {
-    // Fire-and-forget deliberado — ver CheckinSyncConsumer para a
-    // justificativa (boot do Nest não pode depender do broker estar de pé).
-    void this.registerLoop();
-  }
-
-  onModuleDestroy(): void {
-    this.stopped = true;
-    if (this.pendingTimeout) {
-      clearTimeout(this.pendingTimeout);
-      this.pendingTimeout = null;
-    }
-  }
-
-  private async registerLoop(): Promise<void> {
-    while (!this.stopped && !this.registered) {
-      const success = await this.tryRegister();
-
-      if (success || this.stopped) {
-        return;
-      }
-
-      await this.sleep(REGISTER_RETRY_INTERVAL_MS);
-    }
-  }
-
-  private async tryRegister(): Promise<boolean> {
+    // Montado e remontado a cada (re)conexão pelo RabbitMqService — ver CheckinSyncConsumer.
     const queue = transferSyncQueueName(this.agentKey);
-    const deadLetterQueue = transferSyncDeadLetterQueueName(this.agentKey);
-
-    try {
-      await this.rabbitMq.assertAndBindQueue(
-        deadLetterQueue,
-        CHECKIN_EVENTS_EXCHANGE_DLX,
-        TRANSFER_COMPLETED_DEAD_ROUTING_KEY,
-      );
-
-      await this.rabbitMq.assertAndBindQueue(queue, CHECKIN_EVENTS_EXCHANGE, TRANSFER_COMPLETED_ROUTING_KEY, {
-        arguments: {
-          'x-dead-letter-exchange': CHECKIN_EVENTS_EXCHANGE_DLX,
-          'x-dead-letter-routing-key': TRANSFER_COMPLETED_DEAD_ROUTING_KEY,
-        },
-      });
-
-      await this.rabbitMq.consume(queue, (content) => this.handleMessage(content));
-
-      this.registered = true;
-      this.logger.log(`Sincronização de transferências de ingresso ativa (fila "${queue}").`);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Não foi possível registrar o consumer de transferências (broker indisponível?): ${message}. Nova tentativa em ${REGISTER_RETRY_INTERVAL_MS}ms.`,
-      );
-      return false;
-    }
+    this.rabbitMq.registerConsumer(queue, () => this.setup(queue));
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      this.pendingTimeout = setTimeout(resolve, ms);
+  private async setup(queue: string): Promise<void> {
+    await this.rabbitMq.assertAndBindQueue(
+      transferSyncDeadLetterQueueName(this.agentKey),
+      CHECKIN_EVENTS_EXCHANGE_DLX,
+      TRANSFER_COMPLETED_DEAD_ROUTING_KEY,
+      { arguments: { 'x-expires': STATION_QUEUE_EXPIRES_MS } },
+    );
+
+    await this.rabbitMq.assertAndBindQueue(queue, CHECKIN_EVENTS_EXCHANGE, TRANSFER_COMPLETED_ROUTING_KEY, {
+      arguments: {
+        'x-dead-letter-exchange': CHECKIN_EVENTS_EXCHANGE_DLX,
+        'x-dead-letter-routing-key': TRANSFER_COMPLETED_DEAD_ROUTING_KEY,
+        'x-expires': STATION_QUEUE_EXPIRES_MS,
+      },
     });
+
+    await this.rabbitMq.consume(queue, (content) => this.handleMessage(content));
   }
 
   private async handleMessage(content: Buffer): Promise<void> {

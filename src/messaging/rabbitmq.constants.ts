@@ -41,6 +41,12 @@ export const PRINT_JOBS_DLX_EXCHANGE = 'ibc.print.dlx';
 export const PRINT_JOB_FAILED_ROUTING_KEY = 'print.failed';
 export const PRINT_JOBS_DLQ_QUEUE = 'ibc.print.dead-letters';
 
+// As filas por estação (e suas DLQs) somem sozinhas depois de 7 dias sem
+// nenhuma estação conectada nelas. Sem isso, uma estação reinstalada (que
+// ganha identidade nova) ou aposentada deixava filas órfãs acumulando uma
+// cópia de cada evento para sempre, até encher o broker.
+export const STATION_QUEUE_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function checkinSyncQueueName(agentKey: string): string {
   return `checkin.sync.${agentKey}`;
 }

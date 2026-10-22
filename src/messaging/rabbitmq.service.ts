@@ -19,15 +19,19 @@ type AmqpConfirmChannel = Awaited<ReturnType<AmqpConnection['createConfirmChanne
 
 export interface QueueDeclarationOptions {
   durable?: boolean;
-  arguments?: Record<string, string>;
+  arguments?: Record<string, string | number>;
 }
 
 export type MessageHandler = (content: Buffer, msg: ConsumeMessage) => Promise<void>;
+
+/** Declara filas/bindings e chama `consume` — roda de novo a cada (re)conexão. */
+export type ConsumerSetup = () => Promise<void>;
 
 const RECONNECT_DELAY_MS = 5000;
 // Sem isso, um broker inalcançável (estação offline) só falha depois do
 // timeout de TCP do SO (~20s+ no Windows).
 const CONNECT_TIMEOUT_MS = 10000;
+const CONSUMER_SETUP_RETRY_MS = 15000;
 
 /**
  * Cliente RabbitMQ de baixo nível (amqplib) exposto como provider Nest.
@@ -48,6 +52,13 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private connecting = false;
   private shuttingDown = false;
+  // Canais de consumo morrem junto com a conexão: os consumers registrados
+  // aqui são montados de novo a cada conexão bem-sucedida (ver connect()).
+  private readonly consumerSetups = new Map<string, ConsumerSetup>();
+  // Muda a cada conexão nova — um retry de setup agendado numa conexão que já
+  // caiu não roda de novo na seguinte (a própria reconexão já remonta tudo).
+  private connectionGeneration = 0;
+  private ready = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -84,9 +95,16 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     this.connecting = true;
 
     try {
-      this.connection = await amqp.connect(this.url, { timeout: CONNECT_TIMEOUT_MS });
+      const connection = await amqp.connect(this.url, { timeout: CONNECT_TIMEOUT_MS });
+      this.connection = connection;
 
-      this.connection.on('close', () => {
+      connection.on('close', () => {
+        // Só a conexão ATUAL zera o estado — o 'close' atrasado de uma
+        // conexão antiga não pode derrubar uma conexão nova que já está de pé.
+        if (this.connection !== connection) {
+          return;
+        }
+        this.ready = false;
         this.publishChannel = null;
         this.connection = null;
         if (!this.shuttingDown) {
@@ -97,20 +115,81 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
-      this.connection.on('error', (error: Error) => {
+      connection.on('error', (error: Error) => {
         this.logger.error(`Erro na conexão RabbitMQ: ${error.message}`);
       });
 
-      this.publishChannel = await this.connection.createConfirmChannel();
+      this.publishChannel = await this.openPublishChannel(connection);
       await this.declareTopology(this.publishChannel);
 
+      this.connectionGeneration += 1;
+      this.ready = true;
       this.logger.log('Conectado ao RabbitMQ e topologia base declarada.');
+
+      for (const [name, setup] of this.consumerSetups) {
+        void this.runConsumerSetup(name, setup, this.connectionGeneration);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Falha ao conectar ao RabbitMQ: ${message}`);
+      // Conexão aberta mas sem canal/topologia: descarta para a próxima
+      // tentativa não deixar uma conexão órfã aberta no broker.
+      const failed = this.connection;
+      this.connection = null;
+      this.publishChannel = null;
+      void failed?.close().catch(() => undefined);
       this.scheduleReconnect();
     } finally {
       this.connecting = false;
+    }
+  }
+
+  /**
+   * Canal de publicação com listeners próprios: sem listener de 'error', o
+   * fechamento do canal pelo broker vira exceção não tratada e derruba o
+   * processo; e um canal fechado com a conexão ainda viva precisa ser
+   * descartado para o próximo publish abrir outro.
+   */
+  private async openPublishChannel(connection: AmqpConnection): Promise<AmqpConfirmChannel> {
+    const channel = await connection.createConfirmChannel();
+    channel.on('error', (error: Error) => {
+      this.logger.error(`Canal de publicação RabbitMQ fechado com erro: ${error.message}`);
+    });
+    channel.on('close', () => {
+      if (this.publishChannel === channel) {
+        this.publishChannel = null;
+      }
+    });
+    return channel;
+  }
+
+  /**
+   * Registra um consumer para ser montado AGORA (se conectado) e de novo a
+   * CADA reconexão. Antes, cada consumer registrava uma única vez: depois de
+   * qualquer queda de rede a estação parava de receber eventos das outras até
+   * o app ser reaberto.
+   */
+  registerConsumer(name: string, setup: ConsumerSetup): void {
+    this.consumerSetups.set(name, setup);
+    if (this.ready) {
+      void this.runConsumerSetup(name, setup, this.connectionGeneration);
+    }
+  }
+
+  private async runConsumerSetup(name: string, setup: ConsumerSetup, generation: number): Promise<void> {
+    try {
+      await setup();
+      this.logger.log(`Consumer "${name}" ativo.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Não foi possível ativar o consumer "${name}": ${message}. Nova tentativa em ${CONSUMER_SETUP_RETRY_MS}ms.`,
+      );
+      setTimeout(() => {
+        if (!this.shuttingDown && this.ready && this.connectionGeneration === generation) {
+          void this.runConsumerSetup(name, setup, generation);
+        }
+      }, CONSUMER_SETUP_RETRY_MS);
     }
   }
 
@@ -185,6 +264,10 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async ensurePublishChannel(): Promise<AmqpConfirmChannel> {
+    if (!this.publishChannel && this.connection && this.ready) {
+      // Só o canal caiu (a conexão segue viva): abre outro nela mesma.
+      this.publishChannel = await this.openPublishChannel(this.connection);
+    }
     if (!this.publishChannel) {
       await this.connect();
     }
@@ -215,11 +298,17 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     const connection = await this.ensureConnection();
     const channel = await connection.createChannel();
+    // Ex.: fila já existente com argumentos diferentes (PRECONDITION_FAILED):
+    // o broker fecha o canal — o assertQueue rejeita e o erro sobe por ele;
+    // o listener só evita que o 'error' do canal derrube o processo.
+    channel.on('error', (error: Error) => {
+      this.logger.error(`Canal de declaração da fila "${queue}" fechado com erro: ${error.message}`);
+    });
     try {
       await channel.assertQueue(queue, { durable: true, ...queueOptions });
       await channel.bindQueue(queue, exchange, bindingPattern);
     } finally {
-      await channel.close();
+      await channel.close().catch(() => undefined);
     }
   }
 
@@ -232,21 +321,36 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   async consume(queue: string, handler: MessageHandler, prefetch = 10): Promise<void> {
     const connection = await this.ensureConnection();
     const channel: AmqpChannel = await connection.createChannel();
+    channel.on('error', (error: Error) => {
+      this.logger.error(`Canal de consumo da fila "${queue}" fechado com erro: ${error.message}`);
+    });
     await channel.prefetch(prefetch);
+
+    // ack/nack num canal que fechou no meio do processamento (queda de rede)
+    // LANÇA na hora; sem este try, a rejeição ficava sem tratamento e o Node
+    // encerrava o backend. A mensagem não confirmada volta para a fila sozinha.
+    const settle = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Não foi possível confirmar a mensagem da fila "${queue}" (canal fechado?): ${message}`);
+      }
+    };
 
     await channel.consume(queue, (msg) => {
       if (!msg) {
         return;
       }
 
-      handler(msg.content, msg)
-        .then(() => channel.ack(msg))
-        .catch((error: Error) => {
-          this.logger.error(
-            `Falha ao processar mensagem da fila "${queue}": ${error.message}`,
-          );
-          channel.nack(msg, false, false);
-        });
+      handler(msg.content, msg).then(
+        () => settle(() => channel.ack(msg)),
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.error(`Falha ao processar mensagem da fila "${queue}": ${message}`);
+          settle(() => channel.nack(msg, false, false));
+        },
+      );
     });
 
     this.logger.log(`Consumidor registrado na fila "${queue}" (prefetch=${prefetch}).`);
